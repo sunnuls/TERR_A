@@ -1,0 +1,17 @@
+[Unit]
+Description=WhatsApp Bot Service
+After=network.target
+
+[Service]
+Type=simple
+User=botuser
+WorkingDirectory=/home/botuser/whatsapp-bot
+Environment="PATH=/home/botuser/whatsapp-bot/venv/bin"
+ExecStart=/home/botuser/whatsapp-bot/venv/bin/python bot.py
+Restart=always
+RestartSec=10
+StandardOutput=append:/home/botuser/whatsapp-bot/bot.log
+StandardError=append:/home/botuser/whatsapp-bot/bot_error.log
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,22 @@
+version: '3.8'
+
+services:
+  bot:
+    build: .
+    container_name: whatsapp-bot
+    env_file: .env
+    volumes:
+      - ./data:/app/data
+      - ./reports_whatsapp.db:/app/reports_whatsapp.db
+      - ./oauth_client.json:/app/oauth_client.json
+      - ./token.json:/app/token.json
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - TZ=Europe/Moscow
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"

@@ -1,0 +1,12 @@
+# requirements.txt
+# Зависимости для WhatsApp-бота на Flask с интеграцией 360dialog
+
+# Веб-сервер
+flask>=3.0.0
+python-dotenv>=1.0.0
+
+# HTTP запросы к 360dialog API
+requests>=2.31.0
+
+# Для работы с датами и временем
+pytz>=2023.3
