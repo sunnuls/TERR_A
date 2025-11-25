@@ -241,7 +241,42 @@ def get_or_create_monthly_sheet(year: int, month: int) -> Tuple[bool, str, str]:
             logger.info(f"ℹ️ Таблица для {year}-{month:02d} уже существует")
             return True, row[0], row[1]
     
-    # Создаем новую только если не нашли
+    # Если в БД нет, ищем в Google Drive по имени
+    try:
+        month_name = calendar.month_name[month]
+        title = f"{EXPORT_PREFIX} - {month_name} {year}"
+        
+        q = f"name = '{title}' and trashed = false"
+        if DRIVE_FOLDER_ID:
+            q += f" and '{DRIVE_FOLDER_ID}' in parents"
+            
+        results = _drive_service.files().list(
+            q=q, 
+            fields="files(id, webViewLink)",
+            orderBy="createdTime desc"
+        ).execute()
+        
+        files = results.get('files', [])
+        if files:
+            spreadsheet_id = files[0]['id']
+            sheet_url = files[0]['webViewLink']
+            
+            logger.info(f"ℹ️ Найдена существующая таблица в Drive: {title}")
+            
+            # Сохраняем в БД для будущего использования
+            with connect() as con, closing(con.cursor()) as c:
+                c.execute("""
+                    INSERT OR REPLACE INTO monthly_sheets (year, month, spreadsheet_id, sheet_url, created_at)
+                    VALUES (?, ?, ?, ?, ?)
+                """, (year, month, spreadsheet_id, sheet_url, datetime.now().isoformat()))
+                con.commit()
+                
+            return True, spreadsheet_id, sheet_url
+            
+    except Exception as e:
+        logger.warning(f"⚠️ Ошибка поиска таблицы в Drive: {e}")
+
+    # Создаем новую только если не нашли ни в БД, ни в Drive
     logger.info(f"📝 Создаю новую таблицу для {year}-{month:02d}")
     return create_monthly_sheet(year, month)
 
@@ -553,9 +588,173 @@ def scheduled_export():
             logger.error("❌ Не удалось инициализировать Google Sheets")
             return
     
-    count, message = export_reports_to_sheets()
-    logger.info(f"📊 {message}")
-    
     created, msg = check_and_create_next_month_sheet()
     if created:
         logger.info(f"📅 {msg}")
+    
+    # Экспорт отчетов бригадиров
+    brig_count, brig_msg = export_brigadier_reports()
+    if brig_count > 0:
+        logger.info(f"👷 {brig_msg}")
+
+
+# -----------------------------
+# Функции для бригадиров
+# -----------------------------
+
+BRIGADIER_FOLDER_ID = os.getenv("BRIGADIER_FOLDER_ID", "")
+
+def create_brigadier_monthly_sheet(year: int, month: int) -> Tuple[bool, str, str]:
+    """
+    Создает таблицу для бригадиров
+    """
+    if not _initialized:
+        return False, "", "Google Sheets не инициализирован"
+    
+    try:
+        month_name = calendar.month_name[month]
+        title = f"Бригадиры - {month_name} {year}"
+        
+        spreadsheet = {
+            'properties': {'title': title},
+            'sheets': [{'properties': {'title': 'Отчеты', 'gridProperties': {'frozenRowCount': 1}}}]
+        }
+        
+        result = _sheets_service.spreadsheets().create(body=spreadsheet).execute()
+        spreadsheet_id = result['spreadsheetId']
+        sheet_url = f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}"
+        
+        headers = [['Дата создания', 'User ID', 'Имя', 'Тип работы', 'Дата работы', 'Ряды', 'Поле', 'Сетки', 'Люди']]
+        
+        _sheets_service.spreadsheets().values().update(
+            spreadsheetId=spreadsheet_id,
+            range='Отчеты!A1:I1',
+            valueInputOption='RAW',
+            body={'values': headers}
+        ).execute()
+        
+        # Перемещаем в папку бригадиров
+        target_folder = BRIGADIER_FOLDER_ID or DRIVE_FOLDER_ID
+        if target_folder:
+            try:
+                file_metadata = _drive_service.files().get(fileId=spreadsheet_id, fields='parents').execute()
+                previous_parents = ",".join(file_metadata.get('parents', []))
+                _drive_service.files().update(
+                    fileId=spreadsheet_id,
+                    addParents=target_folder,
+                    removeParents=previous_parents,
+                    fields='id, parents'
+                ).execute()
+            except Exception as e:
+                logger.warning(f"⚠️ Не удалось переместить таблицу бригадиров: {e}")
+        
+        # Сохраняем в БД (используем ту же таблицу monthly_sheets, но добавляем метку типа или просто ищем по ID, 
+        # но лучше создать отдельную таблицу для трекинга листов бригадиров, или просто искать по имени/папке.
+        # Для простоты пока не будем сохранять в monthly_sheets, а будем искать каждый раз или кэшировать.
+        # Или добавим колонку type в monthly_sheets. 
+        # Но чтобы не усложнять схему, просто будем создавать/искать по имени.)
+        
+        return True, spreadsheet_id, sheet_url
+    except Exception as e:
+        logger.error(f"❌ Ошибка создания таблицы бригадиров: {e}")
+        return False, "", str(e)
+
+def get_or_create_brigadier_sheet(year: int, month: int) -> Tuple[bool, str, str]:
+    """Получает или создает таблицу бригадиров"""
+    # Здесь упрощенная логика: ищем таблицу с нужным именем в нужной папке
+    # Это медленнее, но не требует изменений схемы monthly_sheets
+    try:
+        month_name = calendar.month_name[month]
+        title = f"Бригадиры - {month_name} {year}"
+        q = f"name = '{title}' and trashed = false"
+        if BRIGADIER_FOLDER_ID:
+            q += f" and '{BRIGADIER_FOLDER_ID}' in parents"
+            
+        results = _drive_service.files().list(q=q, fields="files(id, webViewLink)").execute()
+        files = results.get('files', [])
+        
+        if files:
+            return True, files[0]['id'], files[0]['webViewLink']
+        
+        return create_brigadier_monthly_sheet(year, month)
+    except Exception as e:
+        logger.error(f"❌ Ошибка поиска таблицы бригадиров: {e}")
+        return False, "", ""
+
+def export_brigadier_report_to_sheet(report_id: int) -> bool:
+    """Экспорт отчета бригадира"""
+    if not _initialized: return False
+    
+    try:
+        with connect() as con, closing(con.cursor()) as c:
+            row = c.execute("""
+                SELECT id, timestamp, user_id, username, work_type, work_date, rows, field, bags, workers
+                FROM brigadier_reports WHERE id=?
+            """, (report_id,)).fetchone()
+            
+            if not row: return False
+            
+            # Проверка экспорта
+            existing = c.execute("SELECT row_number FROM brigadier_google_exports WHERE report_id=?", (report_id,)).fetchone()
+            if existing: return True
+            
+            rid, ts, uid, uname, wtype, wdate, rows, field, bags, workers = row
+            
+            # Дата работы
+            if wdate:
+                wdate_obj = datetime.fromisoformat(wdate).date()
+            else:
+                wdate_obj = datetime.fromisoformat(ts).date()
+                wdate = wdate_obj.isoformat()
+            
+            year, month = wdate_obj.year, wdate_obj.month
+            
+            success, spreadsheet_id, sheet_url = get_or_create_brigadier_sheet(year, month)
+            if not success: return False
+            
+            values = [[ts, uid, uname, wtype, wdate, rows, field, bags, workers]]
+            
+            result = _sheets_service.spreadsheets().values().append(
+                spreadsheetId=spreadsheet_id,
+                range='Отчеты!A2:I2',
+                valueInputOption='RAW',
+                insertDataOption='INSERT_ROWS',
+                body={'values': values}
+            ).execute()
+            
+            updated_range = result.get('updates', {}).get('updatedRange', '')
+            row_number = int(updated_range.split('!')[1].split(':')[0][1:]) if updated_range else 0
+            
+            c.execute("""
+                INSERT INTO brigadier_google_exports (report_id, spreadsheet_id, sheet_name, row_number, exported_at, last_updated)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (report_id, spreadsheet_id, 'Отчеты', row_number, datetime.now().isoformat(), datetime.now().isoformat()))
+            con.commit()
+            return True
+    except Exception as e:
+        logger.error(f"❌ Ошибка экспорта отчета бригадира {report_id}: {e}")
+        return False
+
+def export_brigadier_reports() -> Tuple[int, str]:
+    """Массовый экспорт отчетов бригадиров"""
+    if not _initialized: return 0, "Google Sheets не инициализирован"
+    
+    try:
+        with connect() as con, closing(con.cursor()) as c:
+            rows = c.execute("""
+                SELECT r.id FROM brigadier_reports r
+                LEFT JOIN brigadier_google_exports ge ON r.id = ge.report_id
+                WHERE ge.report_id IS NULL
+                ORDER BY r.timestamp
+            """).fetchall()
+        
+        if not rows: return 0, "Все отчеты бригадиров экспортированы"
+        
+        count = 0
+        for (report_id,) in rows:
+            if export_brigadier_report_to_sheet(report_id):
+                count += 1
+        return count, f"Экспортировано отчетов бригадиров: {count}"
+    except Exception as e:
+        logger.error(f"❌ Ошибка массового экспорта бригадиров: {e}")
+        return 0, str(e)

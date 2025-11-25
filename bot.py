@@ -142,6 +142,16 @@ GROUP_WARE = "склад"
 # -----------------------------
 
 user_states: Dict[str, dict] = {}
+processed_messages: set = set()
+
+def is_message_processed(msg_id: str) -> bool:
+    if msg_id in processed_messages:
+        return True
+    processed_messages.add(msg_id)
+    # Simple cleanup: keep set size manageable (optional, for now just let it grow or clear periodically)
+    if len(processed_messages) > 10000:
+        processed_messages.clear()
+    return False
 
 def get_state(user_id: str) -> dict:
     if user_id not in user_states:
@@ -215,6 +225,18 @@ def init_db():
         )
         """)
         c.execute("""
+        CREATE TABLE IF NOT EXISTS brigadier_google_exports(
+          id            INTEGER PRIMARY KEY AUTOINCREMENT,
+          report_id     INTEGER UNIQUE,
+          spreadsheet_id TEXT,
+          sheet_name    TEXT,
+          row_number    INTEGER,
+          exported_at   TEXT,
+          last_updated  TEXT,
+          FOREIGN KEY (report_id) REFERENCES brigadier_reports(id)
+        )
+        """)
+        c.execute("""
         CREATE TABLE IF NOT EXISTS monthly_sheets(
           id            INTEGER PRIMARY KEY AUTOINCREMENT,
           year          INTEGER,
@@ -225,9 +247,39 @@ def init_db():
           UNIQUE(year, month)
         )
         """)
+        c.execute("""
+        CREATE TABLE IF NOT EXISTS brigadiers(
+          user_id       TEXT PRIMARY KEY,
+          username      TEXT,
+          full_name     TEXT,
+          added_by      TEXT,
+          added_date    TEXT
+        )
+        """)
+        c.execute("""
+        CREATE TABLE IF NOT EXISTS brigadier_reports(
+          id            INTEGER PRIMARY KEY AUTOINCREMENT,
+          user_id       TEXT,
+          username      TEXT,
+          work_type     TEXT,
+          rows          INTEGER,
+          field         TEXT,
+          bags          INTEGER,
+          workers       INTEGER,
+          timestamp     TEXT,
+          work_date     TEXT
+        )
+        """)
 
         def table_cols(table: str):
             return {r[1] for r in c.execute(f"PRAGMA table_info({table})").fetchall()}
+
+        # Миграция для brigadier_reports
+        br_cols = table_cols("brigadier_reports")
+        if "work_date" not in br_cols:
+            c.execute("ALTER TABLE brigadier_reports ADD COLUMN work_date TEXT")
+            # Заполняем старые записи текущей датой (или датой из timestamp)
+            c.execute("UPDATE brigadier_reports SET work_date=substr(timestamp, 1, 10) WHERE work_date IS NULL")
 
         lcols = table_cols("locations")
         if "grp" not in lcols:
@@ -316,6 +368,12 @@ def remove_activity(name: str) -> bool:
         con.commit()
         return cur.rowcount > 0
 
+def remove_activity_by_id(aid: int) -> bool:
+    with connect() as con, closing(con.cursor()) as c:
+        cur = c.execute("DELETE FROM activities WHERE id=?", (aid,))
+        con.commit()
+        return cur.rowcount > 0
+
 def list_locations(grp: str) -> List[str]:
     with connect() as con, closing(con.cursor()) as c:
         rows = c.execute("SELECT name FROM locations WHERE grp=? ORDER BY name", (grp,)).fetchall()
@@ -348,6 +406,12 @@ def add_location(grp: str, name: str) -> bool:
 def remove_location(name: str) -> bool:
     with connect() as con, closing(con.cursor()) as c:
         cur = c.execute("DELETE FROM locations WHERE name=?", (name,))
+        con.commit()
+        return cur.rowcount > 0
+
+def remove_location_by_id(lid: int) -> bool:
+    with connect() as con, closing(con.cursor()) as c:
+        cur = c.execute("DELETE FROM locations WHERE id=?", (lid,))
         con.commit()
         return cur.rowcount > 0
 
@@ -448,6 +512,54 @@ def fetch_stats_range_for_user(user_id:str, start_date:str, end_date:str) -> Lis
 def is_admin(user_id: str) -> bool:
     return user_id in ADMIN_IDS
 
+# Brigadier функции
+def is_brigadier(user_id: str) -> bool:
+    """Проверка, является ли пользователь бригадиром"""
+    with connect() as con, closing(con.cursor()) as c:
+        r = c.execute("SELECT user_id FROM brigadiers WHERE user_id=?", (user_id,)).fetchone()
+        return r is not None
+
+def add_brigadier(user_id: str, username: str, full_name: str, added_by: str) -> bool:
+    """Добавление бригадира"""
+    now = datetime.now().isoformat()
+    with connect() as con, closing(con.cursor()) as c:
+        try:
+            c.execute(
+                "INSERT INTO brigadiers(user_id, username, full_name, added_by, added_date) VALUES(?,?,?,?,?)",
+                (user_id, username, full_name, added_by, now)
+            )
+            con.commit()
+            return True
+        except sqlite3.IntegrityError:
+            return False
+
+def remove_brigadier(user_id: str) -> bool:
+    """Удаление бригадира"""
+    with connect() as con, closing(con.cursor()) as c:
+        cur = c.execute("DELETE FROM brigadiers WHERE user_id=?", (user_id,))
+        con.commit()
+        return cur.rowcount > 0
+
+def get_all_brigadiers() -> List[tuple]:
+    """Получение списка всех бригадиров"""
+    with connect() as con, closing(con.cursor()) as c:
+        rows = c.execute(
+            "SELECT user_id, username, full_name, added_by, added_date FROM brigadiers ORDER BY added_date DESC"
+        ).fetchall()
+        return rows
+
+def save_brigadier_report(user_id: str, username: str, work_type: str, 
+                          rows: int, field: str, bags: int, workers: int, work_date: str) -> int:
+    """Сохранение отчета бригадира"""
+    now = datetime.now().isoformat()
+    with connect() as con, closing(con.cursor()) as c:
+        c.execute("""
+        INSERT INTO brigadier_reports(user_id, username, work_type, rows, field, bags, workers, timestamp, work_date)
+        VALUES(?,?,?,?,?,?,?,?,?)
+        """, (user_id, username, work_type, rows, field, bags, workers, now, work_date))
+        con.commit()
+        return c.lastrowid
+
 # Google Sheets функции
 try:
     from google_sheets_manager import (
@@ -457,7 +569,9 @@ try:
         scheduled_export,
         export_report_to_sheet,
         sync_report_update,
-        sync_report_delete
+        sync_report_delete,
+        export_brigadier_reports,
+        export_brigadier_report_to_sheet
     )
     GOOGLE_SHEETS_AVAILABLE = True
     logging.info("✅ Google Sheets модуль загружен")
@@ -508,12 +622,28 @@ def log_request():
 
 def show_main_menu(wa: WhatsApp360Client, user_id: str, u: dict):
     name = (u or {}).get("full_name") or "—"
-    buttons = [
-        Button(title="🚜 Работа", callback_data="menu:work"),
-        Button(title="📊 Статистика", callback_data="menu:stats"),
-        Button(title="Ещё...", callback_data="menu:more"),
-    ]
-    text = f"👤 *{name}*\n\nВыберите действие:"
+    
+    # Проверяем, является ли пользователь бригадиром
+    brigadier = is_brigadier(user_id)
+    
+    if brigadier:
+        buttons = [
+            Button(title="👷 Работа (Бригадир)", callback_data="menu:brigadier"),
+            Button(title="📊 Статистика", callback_data="menu:stats"),
+            Button(title="Ещё...", callback_data="menu:more"),
+        ]
+    else:
+        buttons = [
+            Button(title="🚜 Работа", callback_data="menu:work"),
+            Button(title="📊 Статистика", callback_data="menu:stats"),
+            Button(title="Ещё...", callback_data="menu:more"),
+        ]
+    text = f"👤 *{name}*\n\nВыберите действие: 🌻"
+    
+    # Для админов добавляем подсказку по скрытым командам
+    if is_admin(user_id):
+        text += "\n\n🛠 *Команды админа:*\n`/бриг` - Управление бригадирами\n`00` - В главное меню"
+        
     wa.send_message(to=user_id, text=text, buttons=buttons)
 
 def show_more_menu(wa: WhatsApp360Client, user_id: str):
@@ -528,10 +658,104 @@ def show_more_menu(wa: WhatsApp360Client, user_id: str):
         # Для обычного юзера: Перепись, Имя, Назад
         buttons.append(Button(title="📝 Перепись", callback_data="menu:edit"))
         buttons.append(Button(title="✏️ Имя", callback_data="menu:name"))
-    
     buttons.append(Button(title="🔙 Назад", callback_data="menu:root"))
     
-    wa.send_message(to=user_id, text="Доп. меню:", buttons=buttons[:3])
+    wa.send_message(to=user_id, text="Выберите действие:", buttons=buttons)
+
+def show_brigadier_menu(wa: WhatsApp360Client, user_id: str, selected_date: str):
+    """
+    Показывает меню бригадира для выбранной даты
+    """
+    d = date.fromisoformat(selected_date)
+    date_str = d.strftime("%d.%m.%Y")
+    
+    buttons = [
+        Button(title="🥒 Кабачок", callback_data="brig:zucchini"),
+        Button(title="🥔 Картошка", callback_data="brig:potato"),
+        Button(title="📊 Статистика", callback_data="brig:stats"),
+    ]
+    
+    wa.send_message(to=user_id, text=f"👷 *Меню бригадира*\n📅 Дата: *{date_str}*\n\nВыберите действие:", buttons=buttons)
+
+def show_brigadier_stats_menu(wa: WhatsApp360Client, user_id: str):
+    buttons = [
+        Button(title="Сегодня", callback_data="brig:stats:today"),
+        Button(title="Неделя", callback_data="brig:stats:week"),
+        Button(title="🔙 Назад", callback_data="menu:brigadier"),
+    ]
+    wa.send_message(to=user_id, text="📊 Выберите период статистики:", buttons=buttons)
+
+def get_brigadier_stats(user_id: str, period: str) -> str:
+    """
+    Получение статистики бригадира
+    period: 'today' или 'week'
+    """
+    today = date.today()
+    start_date = today
+    
+    if period == 'week':
+        start_date = today - timedelta(days=6)
+    
+    start_iso = start_date.isoformat()
+    
+    with connect() as con, closing(con.cursor()) as c:
+        # Получаем отчеты за период
+        rows = c.execute("""
+            SELECT work_type, rows, bags, workers, work_date 
+            FROM brigadier_reports 
+            WHERE user_id = ? AND work_date >= ?
+            ORDER BY work_date DESC
+        """, (user_id, start_iso)).fetchall()
+        
+    if not rows:
+        return "Нет данных за выбранный период."
+    
+    # Агрегация
+    total_zucchini_rows = 0
+    total_zucchini_workers = 0
+    total_potato_rows = 0
+    total_potato_bags = 0
+    total_potato_workers = 0
+    
+    details = []
+    
+    for r in rows:
+        w_type, w_rows, w_bags, w_workers, w_date = r
+        d_str = date.fromisoformat(w_date).strftime("%d.%m")
+        
+        if w_type == "Кабачок":
+            total_zucchini_rows += w_rows
+            total_zucchini_workers += w_workers
+            details.append(f"{d_str} 🥒: {w_rows}р, {w_workers}чел")
+        elif w_type == "Картошка":
+            total_potato_rows += w_rows
+            total_potato_bags += w_bags
+            total_potato_workers += w_workers
+            details.append(f"{d_str} 🥔: {w_rows}р, {w_bags}с, {w_workers}чел")
+            
+    # Формируем текст
+    period_str = "сегодня" if period == 'today' else "неделю (7 дней)"
+    text = [f"📊 *Статистика за {period_str}*:\n"]
+    
+    if total_zucchini_rows > 0:
+        text.append(f"🥒 *Кабачок*:")
+        text.append(f"  Рядов: {total_zucchini_rows}")
+        text.append(f"  Людей: {total_zucchini_workers}")
+        
+    if total_potato_rows > 0:
+        text.append(f"\n🥔 *Картошка*:")
+        text.append(f"  Рядов: {total_potato_rows}")
+        text.append(f"  Сеток: {total_potato_bags}")
+        text.append(f"  Людей: {total_potato_workers}")
+        
+    if period == 'week' and len(details) > 0:
+        text.append("\n📝 *Детализация*:")
+        # Показываем последние 10 записей
+        text.extend(details[:10])
+        if len(details) > 10:
+            text.append(f"... и еще {len(details)-10}")
+            
+    return "\n".join(text)
 
 # -----------------------------
 # Обработчики команд
@@ -618,6 +842,52 @@ def cmd_my(client: WhatsApp360Client, msg: MessageObject):
 # Обработка callback кнопок
 # -----------------------------
 
+def show_date_selection(client: WhatsApp360Client, user_id: str, prefix: str):
+    """
+    Универсальная функция выбора даты (последние 7 дней).
+    prefix: префикс для callback_data (например, 'work:date' или 'brig:date')
+    """
+    today = date.today()
+    
+    # Создаем список дат для интерактивного списка
+    rows = []
+    dates = []
+    
+    for i in range(7):
+        d = today - timedelta(days=i)
+        label = "Сегодня" if i == 0 else ("Вчера" if i == 1 else d.strftime("%d.%m"))
+        full_date = d.strftime("%d.%m.%Y")
+        
+        # Для списка WhatsApp нужен уникальный ID
+        date_id = f"{prefix}:{d.isoformat()}"
+        dates.append(d.isoformat())
+        
+        rows.append({
+            "id": date_id,
+            "title": f"{label} ({full_date})",
+            "description": ""  # Можно добавить день недели если нужно
+        })
+    
+    # Создаем секцию со списком дат
+    sections = [
+        {
+            "title": "Выбор даты",
+            "rows": rows
+        }
+    ]
+    
+    # Отправляем интерактивное сообщение со списком
+    client.send_list_message(
+        to=user_id,
+        header_text="📅 Выбор даты",
+        body_text="Выберите дату для заполнения отчета:",
+        button_text="Выбрать дату",
+        sections=sections
+    )
+    
+    # Сохраняем состояние (на случай если понадобится fallback)
+    set_state(user_id, "date_selected_via_list", {"dates_list": dates, "next_prefix": prefix})
+
 @wa.on_callback_button
 def handle_callback(client, btn: CallbackObject):
     user_id = btn.from_user.wa_id
@@ -637,30 +907,210 @@ def handle_callback(client, btn: CallbackObject):
             set_state(user_id, "waiting_name")
             client.send_message(to=user_id, text="Введите *Фамилию Имя* для регистрации.")
             return
-        set_state(user_id, "pick_work_group", {})
-        buttons = [
-            Button(title="Техника", callback_data="work:grp:tech"),
-            Button(title="Ручная", callback_data="work:grp:hand"),
-            Button(title="🔙 Назад", callback_data="menu:root"),
-        ]
-        client.send_message(to=user_id, text="Выберите *тип работы*:", buttons=buttons)
+        
+        # New flow: Start with date selection
+        show_date_selection(client, user_id, prefix="work:date")
     
     elif data == "menu:stats":
-        admin = is_admin(user_id)
+        # 1. Admin Logic
+        if is_admin(user_id):
+            buttons = [
+                Button(title="🚜 Terra (Все)", callback_data="stats:admin:terra"),
+                Button(title="👷 Бригадиры (Все)", callback_data="stats:admin:brig"),
+                Button(title="🔙 Назад", callback_data="menu:root"),
+            ]
+            client.send_message(to=user_id, text="📊 *Статистика администратора*\n\nВыберите категорию:", buttons=buttons)
+            return
+
+        # 2. Brigadier Logic
+        if is_brigadier(user_id):
+            # Show brigadier stats for current month
+            today = date.today()
+            start_date = date(today.year, today.month, 1).isoformat()
+            
+            # Fetch brigadier reports
+            with connect() as con, closing(con.cursor()) as c:
+                rows = c.execute("""
+                    SELECT work_date, work_type, rows, bags, workers, field 
+                    FROM brigadier_reports 
+                    WHERE user_id = ? AND work_date >= ?
+                    ORDER BY work_date DESC
+                """, (user_id, start_date)).fetchall()
+            
+            month_name = calendar.month_name[today.month]
+            if not rows:
+                text = f"📊 *Статистика за {month_name}*\n\nЗаписей нет."
+            else:
+                parts = [f"📊 *Статистика за {month_name}*:"]
+                per_day = {}
+                
+                # Aggregates
+                total_rows = 0
+                total_bags = 0
+                
+                for r in rows:
+                    w_date, w_type, w_rows, w_bags, w_workers, w_field = r
+                    per_day.setdefault(w_date, []).append((w_type, w_rows, w_bags, w_workers, w_field))
+                    total_rows += w_rows
+                    total_bags += w_bags
+                
+                for d in sorted(per_day.keys(), reverse=True):
+                    d_obj = date.fromisoformat(d)
+                    d_str = d_obj.strftime("%d.%m")
+                    parts.append(f"\n📅 *{d_str}*")
+                    for w_type, w_rows, w_bags, w_workers, w_field in per_day[d]:
+                        field_info = f" ({w_field})" if w_field else ""
+                        if w_type == "Кабачок":
+                            parts.append(f"• 🥒 {w_rows}р, {w_workers}ч{field_info}")
+                        else:
+                            parts.append(f"• 🥔 {w_rows}р, {w_bags}с, {w_workers}ч{field_info}")
+                
+                parts.append(f"\nИтого: *{total_rows}* рядов, *{total_bags}* сеток")
+                text = "\n".join(parts)
+            
+            buttons = [
+                Button(title="✏️ Изменить", callback_data="menu:edit_list"),
+                Button(title="🗑 Удалить", callback_data="menu:delete_list"),
+                Button(title="🔙 Назад", callback_data="menu:root"),
+            ]
+            client.send_message(to=user_id, text=text, buttons=buttons)
+            return
+
+        # 3. Regular User Logic
+        today = date.today()
+        start_date = date(today.year, today.month, 1).isoformat()
+        end_date = today.isoformat()
+        
+        rows = fetch_stats_range_for_user(user_id, start_date, end_date)
+        
+        month_name = calendar.month_name[today.month]
+        if not rows:
+            text = f"📊 *Статистика за {month_name}*\n\nЗаписей нет."
+        else:
+            parts = [f"📊 *Статистика за {month_name}*:"]
+            per_day = {}
+            total = 0
+            for d, loc, act, h in rows:
+                per_day.setdefault(d, []).append((loc, act, h))
+            
+            for d in sorted(per_day.keys(), reverse=True):
+                d_obj = date.fromisoformat(d)
+                d_str = d_obj.strftime("%d.%m")
+                parts.append(f"\n📅 *{d_str}*")
+                for loc, act, h in per_day[d]:
+                    parts.append(f"• {loc} — {act}: *{h}* ч")
+                    total += h
+            parts.append(f"\nИтого за месяц: *{total}* ч")
+            text = "\n".join(parts)
+        
         buttons = [
-            Button(title="Сегодня", callback_data="stats:today"),
-            Button(title="Неделя", callback_data="stats:week"),
+            Button(title="✏️ Изменить", callback_data="menu:edit_list"),
+            Button(title="🗑 Удалить", callback_data="menu:delete_list"),
+            Button(title="🔙 Назад", callback_data="menu:root"),
         ]
         
-        # Add "Перепись" button for admins only
-        if admin:
-            buttons.append(Button(title="📝 Перепись", callback_data="menu:edit"))
+        client.send_message(to=user_id, text=text, buttons=buttons)
+
+    elif data == "stats:admin:terra":
+        if not is_admin(user_id): return
+        today = date.today()
+        start_date = date(today.year, today.month, 1).isoformat()
         
-        buttons.append(Button(title="🔙 Назад", callback_data="menu:root"))
+        with connect() as con, closing(con.cursor()) as c:
+            rows = c.execute("""
+                SELECT work_date, COUNT(DISTINCT user_id), SUM(hours)
+                FROM reports
+                WHERE work_date >= ?
+                GROUP BY work_date
+                ORDER BY work_date DESC
+            """, (start_date,)).fetchall()
+            
+        month_name = calendar.month_name[today.month]
+        if not rows:
+            text = f"🚜 *Terra (Все) - {month_name}*\n\nЗаписей нет."
+        else:
+            lines = [f"🚜 *Terra (Все) - {month_name}*\n"]
+            total_h = 0
+            for r in rows:
+                wd, users, hours = r
+                d_str = date.fromisoformat(wd).strftime("%d.%m")
+                lines.append(f"📅 *{d_str}*: {users} чел, *{hours}* ч")
+                total_h += hours
+            lines.append(f"\nВсего часов: *{total_h}*")
+            lines.append("\n💡 /x -open full")
+            text = "\n".join(lines)
+            
+        # Set state to allow 'x' command
+        set_state(user_id, "admin_viewing_stats", {"type": "terra"})
+        client.send_message(to=user_id, text=text)
+
+    elif data == "stats:admin:brig":
+        if not is_admin(user_id): return
+        today = date.today()
+        start_date = date(today.year, today.month, 1).isoformat()
         
-        client.send_message(to=user_id, text="Выберите период статистики:", buttons=buttons)
-    
-    elif data == "menu:edit":
+        with connect() as con, closing(con.cursor()) as c:
+            rows = c.execute("""
+                SELECT work_date, COUNT(DISTINCT user_id), SUM(rows), SUM(bags)
+                FROM brigadier_reports
+                WHERE work_date >= ?
+                GROUP BY work_date
+                ORDER BY work_date DESC
+            """, (start_date,)).fetchall()
+            
+        month_name = calendar.month_name[today.month]
+        if not rows:
+            text = f"👷 *Бригадиры (Все) - {month_name}*\n\nЗаписей нет."
+        else:
+            lines = [f"👷 *Бригадиры (Все) - {month_name}*\n"]
+            t_rows, t_bags = 0, 0
+            for r in rows:
+                wd, users, r_rows, r_bags = r
+                d_str = date.fromisoformat(wd).strftime("%d.%m")
+                lines.append(f"📅 *{d_str}*: {users} бриг, {r_rows}р, {r_bags}с")
+                t_rows += r_rows
+                t_bags += r_bags
+            lines.append(f"\nИтого: *{t_rows}* рядов, *{t_bags}* сеток")
+            lines.append("\n💡 /x -open full")
+            text = "\n".join(lines)
+            
+        # Set state to allow 'x' command
+        set_state(user_id, "admin_viewing_stats", {"type": "brig"})
+        client.send_message(to=user_id, text=text)
+
+    elif data == "menu:edit_list":
+        # Logic to show list for editing (similar to old menu:edit)
+        # We need to handle both regular and brigadier reports if needed, 
+        # but for now let's stick to the user's role.
+        
+        if is_brigadier(user_id):
+             # Brigadier edit list (last 24h or recent)
+             # For simplicity, let's show recent 5
+             with connect() as con, closing(con.cursor()) as c:
+                rows = c.execute("""
+                    SELECT id, work_date, work_type, rows, field 
+                    FROM brigadier_reports 
+                    WHERE user_id=? 
+                    ORDER BY created_at DESC LIMIT 5
+                """, (user_id,)).fetchall()
+             
+             if not rows:
+                 client.send_message(to=user_id, text="📝 Нет недавних записей для редактирования.")
+                 return
+                 
+             lines = ["Выберите *запись* для изменения (отправьте номер):"]
+             state = get_state(user_id)
+             state["data"]["edit_list_brig"] = rows
+             set_state(user_id, "wait_edit_brig_select", state["data"])
+             
+             for i, r in enumerate(rows, 1):
+                 rid, wd, wt, wr, wf = r
+                 lines.append(f"{i}. {wd} | {wt} ({wr}р) {wf or ''}")
+             lines.append("\n0. 🔙 Назад")
+             client.send_message(to=user_id, text="\n".join(lines))
+             return
+
+        # Regular user edit list
         rows = user_recent_24h_reports(user_id)
         if not rows:
             client.send_message(to=user_id, text="📝 За последние 24 часа записей нет.")
@@ -670,7 +1120,7 @@ def handle_callback(client, btn: CallbackObject):
         state["data"]["edit_records"] = rows
         set_state(user_id, "waiting_record_selection", state["data"])
         
-        lines = ["Выберите *запись* для редактирования (отправьте номер):"]
+        lines = ["Выберите *запись* для изменения (отправьте номер):"]
         for i, r in enumerate(rows, 1):
             rid, wdate, act, loc, h, _ = r
             lines.append(f"{i}. {wdate} | {act} ({loc}) — *{h}ч*")
@@ -678,6 +1128,50 @@ def handle_callback(client, btn: CallbackObject):
         
         text = "\n".join(lines)
         client.send_message(to=user_id, text=text)
+
+    elif data == "menu:delete_list":
+        # Logic to show list for deletion
+        if is_brigadier(user_id):
+             with connect() as con, closing(con.cursor()) as c:
+                rows = c.execute("""
+                    SELECT id, work_date, work_type, rows, field 
+                    FROM brigadier_reports 
+                    WHERE user_id=? 
+                    ORDER BY created_at DESC LIMIT 5
+                """, (user_id,)).fetchall()
+             
+             if not rows:
+                 client.send_message(to=user_id, text="🗑 Нет недавних записей для удаления.")
+                 return
+                 
+             lines = ["Выберите *запись* для удаления (отправьте номер):"]
+             state = get_state(user_id)
+             state["data"]["del_list_brig"] = rows
+             set_state(user_id, "wait_del_brig_select", state["data"])
+             
+             for i, r in enumerate(rows, 1):
+                 rid, wd, wt, wr, wf = r
+                 lines.append(f"{i}. {wd} | {wt} ({wr}р) {wf or ''}")
+             lines.append("\n0. 🔙 Назад")
+             client.send_message(to=user_id, text="\n".join(lines))
+             return
+
+        # Regular user delete list
+        rows = user_recent_24h_reports(user_id)
+        if not rows:
+            client.send_message(to=user_id, text="🗑 За последние 24 часа записей нет.")
+            return
+            
+        state = get_state(user_id)
+        state["data"]["del_records"] = rows
+        set_state(user_id, "waiting_del_selection", state["data"])
+        
+        lines = ["Выберите *запись* для удаления (отправьте номер):"]
+        for i, r in enumerate(rows, 1):
+            rid, wdate, act, loc, h, _ = r
+            lines.append(f"{i}. {wdate} | {act} ({loc}) — *{h}ч*")
+        lines.append("\n0. 🔙 Назад")
+        client.send_message(to=user_id, text="\n".join(lines))
     
     elif data == "menu:name":
         set_state(user_id, "waiting_name")
@@ -693,7 +1187,9 @@ def handle_callback(client, btn: CallbackObject):
             Button(title="➕➖ Локации", callback_data="adm:menu:locations"),
             Button(title="📤 Экспорт", callback_data="adm:export"),
         ]
-        client.send_message(to=user_id, text="⚙️ *Админ-панель*:", buttons=buttons)
+        # Добавляем кнопку управления бригадирами
+        buttons.append(Button(title="👷 Бригадиры", callback_data="adm:menu:brigadiers"))
+        client.send_message(to=user_id, text="⚙️ *Админ-панель*:", buttons=buttons[:3])
     
     elif data == "adm:menu:activities":
         if not is_admin(user_id):
@@ -723,11 +1219,62 @@ def handle_callback(client, btn: CallbackObject):
     elif data == "stats:week":
         cmd_my(client, btn)
     
+        client.send_message(to=user_id, text=f"✅ Выбрано: *{activity_name}*\n\nТеперь выберите *локацию*:", buttons=buttons)
+        return
+    
+    elif data == "cancel_activity":
+        # Cancel activity selection, return to work type selection
+        buttons = [
+            Button(title="Техника", callback_data="work:grp:tech"),
+            Button(title="Ручная", callback_data="work:grp:hand"),
+            Button(title="🔙 Назад", callback_data="menu:root"),
+        ]
+        client.send_message(to=user_id, text="Выберите *тип работы*:", buttons=buttons)
+        clear_state(user_id)
+        return
+    
+    elif data == "cancel_location":
+        # Cancel location selection, return to location group selection
+        state = get_state(user_id)
+        work_data = state["data"].get("work", {})
+        activity_name = work_data.get("activity", "работа")
+        
+        buttons = [
+            Button(title="Поля", callback_data="work:locgrp:fields"),
+            Button(title="Склад", callback_data="work:locgrp:ware"),
+            Button(title="🔙 Назад", callback_data="menu:work"),
+        ]
+        client.send_message(to=user_id, text=f"✅ Выбрано: *{activity_name}*\n\nТеперь выберите *локацию*:", buttons=buttons)
+        return
+    
+    elif data.startswith("work:date:"):
+        # Дата выбрана (через callback, если бы мы использовали кнопки, но мы используем текстовый ввод)
+        # Но оставим этот handler на случай, если мы решим использовать кнопки в будущем
+        # или если вызов идет из другого места.
+        selected_date = data.split(":")[2]
+        set_state(user_id, "pick_work_group", {"date": selected_date})
+        
+        buttons = [
+            Button(title="Техника", callback_data="work:grp:tech"),
+            Button(title="Ручная", callback_data="work:grp:hand"),
+            Button(title="🔙 Назад", callback_data="menu:root"),
+        ]
+        d_str = date.fromisoformat(selected_date).strftime("%d.%m.%Y")
+        client.send_message(to=user_id, text=f"📅 Дата: *{d_str}*\n\nВыберите *тип работы*:", buttons=buttons)
+
     elif data.startswith("work:grp:"):
         kind = data.split(":")[2]
         grp_name = GROUP_TECH if kind == "tech" else GROUP_HAND
+        
+        # Preserve the date from the previous state
         state = get_state(user_id)
-        state["data"]["work"] = {"grp": grp_name}
+        work_date = state["data"].get("date")
+        
+        # If date is missing (should not happen in new flow), default to today
+        if not work_date:
+            work_date = date.today().isoformat()
+            
+        state["data"]["work"] = {"grp": grp_name, "date": work_date}
         
         activities = list_activities_with_id(grp_name)
         state["data"]["acts"] = activities
@@ -742,11 +1289,11 @@ def handle_callback(client, btn: CallbackObject):
         lines = ["Выберите *вид работы* (отправьте номер или название):"]
         for i, (aid, name) in enumerate(activities, 1):
             lines.append(f"{i}. {name}")
-        lines.append(f"{len(activities) + 1}. 📝 Прочее (свой вариант)")
-        lines.append("\n0. 🔙 Назад")
+        lines.append(f"{len(activities) + 1}. 📝 Прочее")
         
         text = "\n".join(lines)
-        client.send_message(to=user_id, text=text)
+        quick_replies = [{"id": "cancel_activity", "title": "🔙 Back"}]
+        client.send_text_with_quick_replies(to=user_id, text=text, quick_replies=quick_replies)
     
     elif data.startswith("work:locgrp:"):
         lg = data.split(":")[2]
@@ -758,23 +1305,11 @@ def handle_callback(client, btn: CallbackObject):
         if lg == "ware":
             work_data["location"] = "Склад"
             state["data"]["work"] = work_data
-            set_state(user_id, "pick_date", state["data"])
             
-            today = date.today()
-            dates = []
-            lines = ["Выберите *дату* (отправьте номер):"]
-            for i in range(7):
-                d = today - timedelta(days=i)
-                label = "Сегодня" if i == 0 else ("Вчера" if i == 1 else d.strftime("%d.%m"))
-                dates.append(d.isoformat())
-                lines.append(f"{i+1}. {label} ({d.strftime('%d.%m.%Y')})")
-            lines.append("\n0. 🔙 Назад")
+            # Skip date selection (already done), go to hours
+            set_state(user_id, "waiting_hours", state["data"])
+            client.send_message(to=user_id, text="Введите *количество часов*:")
             
-            state["data"]["dates_list"] = dates
-            set_state(user_id, "waiting_date_selection", state["data"])
-            
-            text = "\n".join(lines)
-            client.send_message(to=user_id, text=text)
         else:
             state["data"]["work"] = work_data
             
@@ -791,10 +1326,10 @@ def handle_callback(client, btn: CallbackObject):
             lines = ["Выберите *место* (отправьте номер или название):"]
             for i, (lid, name) in enumerate(locations, 1):
                 lines.append(f"{i}. {name}")
-            lines.append("\n0. 🔙 Назад")
             
             text = "\n".join(lines)
-            client.send_message(to=user_id, text=text)
+            quick_replies = [{"id": "cancel_location", "title": "🔙 Back"}]
+            client.send_text_with_quick_replies(to=user_id, text=text, quick_replies=quick_replies)
     
     elif data.startswith("edit:del:"):
         try:
@@ -860,24 +1395,67 @@ def handle_callback(client, btn: CallbackObject):
         set_state(user_id, "adm_wait_loc_add")
         client.send_message(to=user_id, text=text)
 
-    elif data == "adm:del:loc":
+    elif data.startswith("adm:del:loc"):
         if not is_admin(user_id):
             client.send_message(to=user_id, text="❌ Нет прав")
             return
+        
+        # Parse page number
+        page = 0
+        if ":PAGE:" in data:
+            try:
+                page = int(data.split(":PAGE:")[1])
+            except:
+                page = 0
+                
         locations = list_locations_with_id(GROUP_FIELDS)
         if not locations:
             client.send_message(to=user_id, text="❌ Нет локаций для удаления.")
             return
-        state = get_state(user_id)
-        state["data"]["locs_del"] = locations
-        set_state(user_id, "adm_wait_loc_del", state["data"])
         
-        lines = ["Выберите *локацию* для удаления (отправьте номер или название):"]
-        for i, (lid, name) in enumerate(locations, 1):
-            lines.append(f"{i}. {name}")
-        lines.append("\n0. 🔙 Назад")
-        text = "\n".join(lines)
-        client.send_message(to=user_id, text=text)
+        # Pagination logic
+        PAGE_SIZE = 8
+        total_items = len(locations)
+        total_pages = (total_items + PAGE_SIZE - 1) // PAGE_SIZE
+        
+        if page >= total_pages: page = total_pages - 1
+        if page < 0: page = 0
+        
+        start_idx = page * PAGE_SIZE
+        end_idx = start_idx + PAGE_SIZE
+        current_page_items = locations[start_idx:end_idx]
+        
+        rows = []
+        for lid, name in current_page_items:
+            rows.append({
+                "id": f"adm:del:loc:CONFIRM:{lid}",
+                "title": name,
+                "description": ""
+            })
+            
+        # Add navigation buttons
+        if page > 0:
+            rows.append({
+                "id": f"adm:del:loc:PAGE:{page-1}",
+                "title": "⬅️ Назад",
+                "description": ""
+            })
+        if page < total_pages - 1:
+            rows.append({
+                "id": f"adm:del:loc:PAGE:{page+1}",
+                "title": "Вперед ➡️",
+                "description": ""
+            })
+            
+        sections = [{"title": f"Локации (Стр. {page+1}/{total_pages})", "rows": rows}]
+        
+        client.send_list_message(
+            to=user_id,
+            header_text="🗑 Удаление локации",
+            body_text="Выберите локацию для удаления:",
+            button_text="Выбрать локацию",
+            sections=sections
+        )
 
     elif data.startswith("adm:add:act:"):
         if not is_admin(user_id):
@@ -903,7 +1481,19 @@ def handle_callback(client, btn: CallbackObject):
         if not is_admin(user_id):
             client.send_message(to=user_id, text="❌ Нет прав")
             return
-        kind = data.split(":")[3]
+        
+        # Parse kind and page
+        parts = data.split(":")
+        # Format: adm:del:act:<kind> or adm:del:act:<kind>:PAGE:<page>
+        kind = parts[3]
+        
+        page = 0
+        if "PAGE" in parts:
+            try:
+                page = int(parts[parts.index("PAGE") + 1])
+            except:
+                page = 0
+                
         grp = GROUP_TECH if kind == "tech" else GROUP_HAND
         grp_label = "Техника" if kind == "tech" else "Ручная"
         
@@ -912,27 +1502,109 @@ def handle_callback(client, btn: CallbackObject):
             client.send_message(to=user_id, text=f"❌ Нет работ в группе '{grp_label}' для удаления.")
             return
         
-        state = get_state(user_id)
-        state["data"]["acts_del"] = activities
-        state["data"]["act_grp"] = grp
-        set_state(user_id, "adm_wait_act_del", state["data"])
+        # Pagination logic
+        PAGE_SIZE = 8
+        total_items = len(activities)
+        total_pages = (total_items + PAGE_SIZE - 1) // PAGE_SIZE
         
-        lines = [f"Выберите *работу* для удаления ({grp_label}) (отправьте номер или название):"]
-        for i, (aid, name) in enumerate(activities, 1):
-            lines.append(f"{i}. {name}")
-        lines.append("\n0. 🔙 Назад")
-        text = "\n".join(lines)
-        client.send_message(to=user_id, text=text)
+        if page >= total_pages: page = total_pages - 1
+        if page < 0: page = 0
+        
+        start_idx = page * PAGE_SIZE
+        end_idx = start_idx + PAGE_SIZE
+        current_page_items = activities[start_idx:end_idx]
+        
+        rows = []
+        for aid, name in current_page_items:
+            rows.append({
+                "id": f"adm:del:act:CONFIRM:{aid}",
+                "title": name,
+                "description": ""
+            })
+            
+        # Add navigation buttons
+        if page > 0:
+            rows.append({
+                "id": f"adm:del:act:{kind}:PAGE:{page-1}",
+                "title": "⬅️ Назад",
+                "description": ""
+            })
+        if page < total_pages - 1:
+            rows.append({
+                "id": f"adm:del:act:{kind}:PAGE:{page+1}",
+                "title": "Вперед ➡️",
+                "description": ""
+            })
+            
+        sections = [{"title": f"{grp_label} (Стр. {page+1}/{total_pages})", "rows": rows}]
+        
+        client.send_list_message(
+            to=user_id,
+            header_text="🗑 Удаление работы",
+            body_text=f"Выберите работу ({grp_label}) для удаления:",
+            button_text="Выбрать работу",
+            sections=sections
+        )
+    
+
+
+    elif data.startswith("adm:del:loc:CONFIRM:"):
+        if not is_admin(user_id): return
+        try:
+            lid = int(data.split(":")[4])
+            if remove_location_by_id(lid):
+                client.send_message(to=user_id, text="✅ Локация удалена.")
+            else:
+                client.send_message(to=user_id, text="❌ Ошибка удаления.")
+        except Exception as e:
+            logging.error(f"Error deleting location: {e}")
+            client.send_message(to=user_id, text="❌ Ошибка.")
+        
+        # Return to menu
+        buttons = [
+            Button(title="➕ Добавить", callback_data="adm:add:loc"),
+            Button(title="➖ Удалить", callback_data="adm:del:loc"),
+            Button(title="🔙 Назад", callback_data="menu:admin"),
+        ]
+        client.send_message(to=user_id, text="⚙️ *Управление локациями*:", buttons=buttons)
+
+    elif data.startswith("adm:del:act:CONFIRM:"):
+        if not is_admin(user_id): return
+        try:
+            aid = int(data.split(":")[4])
+            if remove_activity_by_id(aid):
+                client.send_message(to=user_id, text="✅ Работа удалена.")
+            else:
+                client.send_message(to=user_id, text="❌ Ошибка удаления.")
+        except Exception as e:
+            logging.error(f"Error deleting activity: {e}")
+            client.send_message(to=user_id, text="❌ Ошибка.")
+            
+        # Return to menu
+        buttons = [
+            Button(title="➕ Добавить", callback_data="adm:add:act"),
+            Button(title="➖ Удалить", callback_data="adm:del:act"),
+            Button(title="🔙 Назад", callback_data="menu:admin"),
+        ]
+        client.send_message(to=user_id, text="⚙️ *Управление работами*:", buttons=buttons)
     
     elif data == "adm:export":
         if not is_admin(user_id):
             client.send_message(to=user_id, text="❌ Нет прав")
             return
         
-        client.send_message(to=user_id, text="⏳ Экспортирую отчеты в Google Sheets...")
+        # client.send_message(to=user_id, text="⏳ Экспортирую отчеты в Google Sheets...")
         try:
             count, message = export_reports_to_sheets()
             text = f"✅ {message}" if count > 0 else f"ℹ️ {message}"
+            
+            # Экспорт бригадиров
+            brig_count, brig_msg = export_brigadier_reports()
+            if brig_count > 0:
+                text += f"\n✅ {brig_msg}"
+            elif "Ошибка" in brig_msg:
+                text += f"\n❌ {brig_msg}"
+            
             created, sheet_msg = check_and_create_next_month_sheet()
             if created:
                 text += f"\n\n📅 {sheet_msg}"
@@ -945,6 +1617,155 @@ def handle_callback(client, btn: CallbackObject):
         # Возврат в главное меню
         u = get_user(user_id)
         show_main_menu(client, user_id, u)
+    
+    # -----------------------------
+    # Обработчики для бригадиров
+    # -----------------------------
+    
+    elif data == "menu:brigadier":
+        # Показать меню выбора даты
+        if not is_brigadier(user_id):
+            client.send_message(to=user_id, text="❌ У вас нет прав бригадира")
+            return
+        show_date_selection(client, user_id, prefix="brig:date")
+    
+    elif data.startswith("brig:date:"):
+        # Дата выбрана (через callback, если бы мы использовали кнопки)
+        selected_date = data.split(":")[2]
+        set_state(user_id, "brig_menu_selected", {"date": selected_date})
+        show_brigadier_menu(client, user_id, selected_date)
+    
+    elif data == "brig:stats":
+        show_brigadier_stats_menu(client, user_id)
+        
+    elif data == "brig:stats:today":
+        text = get_brigadier_stats(user_id, 'today')
+        client.send_message(to=user_id, text=text)
+        show_brigadier_stats_menu(client, user_id)
+        
+    elif data == "brig:stats:week":
+        text = get_brigadier_stats(user_id, 'week')
+        client.send_message(to=user_id, text=text)
+        show_brigadier_stats_menu(client, user_id)
+
+    elif data == "brig:zucchini":
+        # Получаем выбранную дату из состояния
+        state = get_state(user_id)
+        selected_date = state["data"].get("date", date.today().isoformat())
+        
+        # Начать форму для кабачков
+        set_state(user_id, "brig_zucchini_rows", {"work_type": "Кабачок", "date": selected_date})
+        client.send_message(to=user_id, text="🥒 *Кабачок*\n\nВведите *количество рядов*:")
+    
+    elif data == "brig:potato":
+        # Получаем выбранную дату из состояния
+        state = get_state(user_id)
+        selected_date = state["data"].get("date", date.today().isoformat())
+        
+        # Начать форму для картошки
+        set_state(user_id, "brig_potato_rows", {"work_type": "Картошка", "date": selected_date})
+        client.send_message(to=user_id, text="🥔 *Картошка*\n\nВведите *количество выкопанных рядов*:")
+    
+    # -----------------------------
+    # Админ: Управление бригадирами
+    # -----------------------------
+    
+    elif data == "adm:menu:brigadiers":
+        if not is_admin(user_id):
+            client.send_message(to=user_id, text="❌ Нет прав")
+            return
+        buttons = [
+            Button(title="➕ Добавить бригадира", callback_data="adm:add:brigadier"),
+            Button(title="➖ Удалить бригадира", callback_data="adm:del:brigadier"),
+            Button(title="📋 Список бригадиров", callback_data="adm:list:brigadiers"),
+        ]
+        client.send_message(to=user_id, text="👷 *Управление бригадирами*:", buttons=buttons)
+    
+    elif data == "adm:add:brigadier":
+        if not is_admin(user_id):
+            client.send_message(to=user_id, text="❌ Нет прав")
+            return
+        set_state(user_id, "adm_wait_brigadier_add")
+        client.send_message(
+            to=user_id, 
+            text="➕ *Добавление бригадира*\n\nОтправьте *контакт* бригадира или введите *номер телефона* (например: 79001234567):"
+        )
+    
+    elif data == "adm:del:brigadier":
+        if not is_admin(user_id):
+            client.send_message(to=user_id, text="❌ Нет прав")
+            return
+        brigadiers = get_all_brigadiers()
+        if not brigadiers:
+            client.send_message(to=user_id, text="❌ Нет бригадиров для удаления.")
+            return
+        
+        state = get_state(user_id)
+        state["data"]["brigadiers_list"] = brigadiers
+        set_state(user_id, "adm_wait_brigadier_del", state["data"])
+        
+        lines = ["Выберите *бригадира* для удаления (отправьте номер):"]
+        for i, (uid, uname, fname, added_by, added_date) in enumerate(brigadiers, 1):
+            lines.append(f"{i}. {fname or uname} ({uid})")
+        lines.append("\n0. 🔙 Назад")
+        text = "\n".join(lines)
+        client.send_message(to=user_id, text=text)
+    
+    elif data == "adm:list:brigadiers":
+        if not is_admin(user_id):
+            client.send_message(to=user_id, text="❌ Нет прав")
+            return
+        brigadiers = get_all_brigadiers()
+        if not brigadiers:
+            client.send_message(to=user_id, text="📋 *Список бригадиров*\n\nСписок пуст.")
+            return
+        
+        lines = ["📋 *Список бригадиров*:\n"]
+        for i, (uid, uname, fname, added_by, added_date) in enumerate(brigadiers, 1):
+            # Показываем Имя (или username) и ID
+            display_name = fname or uname or "Без имени"
+            lines.append(f"{i}. {display_name}")
+            lines.append(f"   ID: `{uid}`\n")
+        text = "\n".join(lines)
+        client.send_message(to=user_id, text=text)
+
+# ... (пропуск кода) ...
+
+    # Админ: добавление бригадира
+    if current_state == "adm_wait_brigadier_add":
+        # Ожидаем номер телефона или "Номер Имя"
+        text_parts = message_text.strip().split(maxsplit=1)
+        phone = text_parts[0]
+        custom_name = text_parts[1] if len(text_parts) > 1 else None
+        
+        if not phone.isdigit() or len(phone) < 10:
+            client.send_message(to=user_id, text="❌ Введите корректный номер телефона (например: 79001234567) или 'Номер Имя':")
+            return
+        
+        # Получаем информацию о пользователе
+        target_user = get_user(phone)
+        if not target_user:
+            # Создаем пользователя если его нет
+            # Если имя передано, используем его, иначе дефолтное
+            initial_name = custom_name or f"Бригадир {phone}"
+            upsert_user(phone, initial_name, TZ)
+            target_user = get_user(phone)
+        elif custom_name:
+            # Если пользователь есть и передано новое имя - обновляем
+            upsert_user(phone, custom_name, TZ)
+            target_user = get_user(phone)
+        
+        username = target_user.get("full_name") or phone
+        
+        if add_brigadier(phone, username, username, user_id):
+            client.send_message(to=user_id, text=f"✅ Бригадир *{username}* ({phone}) добавлен.")
+        else:
+            client.send_message(to=user_id, text="❌ Этот пользователь уже является бригадиром.")
+        
+        clear_state(user_id)
+        u = get_user(user_id)
+        show_main_menu(client, user_id, u)
+        return
 
 # -----------------------------
 # Обработка текстовых сообщений
@@ -961,6 +1782,14 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
     logging.info(f"[TEXT] {user_id}: {message_text}")
 
     # 1. Обработка команд
+    # Глобальный сброс
+    if message_text == "00":
+        clear_state(user_id)
+        u = get_user(user_id)
+        client.send_message(to=user_id, text="🔄 Сброс в главное меню")
+        show_main_menu(client, user_id, u)
+        return
+
     if norm_text in {"menu", "меню"}:
         cmd_menu(client, msg)
         return
@@ -973,6 +1802,100 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
     if norm_text in {"my", "мои"}:
         cmd_my(client, msg)
         return
+
+    # Special command for extended stats
+    if norm_text in {"x", "х", "ч", "{", "/x"}: # x (eng), х (rus), ч (typo), { (shift+x), /x
+        state = get_state(user_id)
+        if state.get("state") == "admin_viewing_stats":
+            st_type = state["data"].get("type")
+            if st_type == "terra":
+                today = date.today()
+                start_date = date(today.year, today.month, 1).isoformat()
+                
+                with connect() as con, closing(con.cursor()) as c:
+                    rows = c.execute("""
+                        SELECT work_date, reg_name, location, activity, hours
+                        FROM reports
+                        WHERE work_date >= ?
+                        ORDER BY work_date DESC, reg_name ASC
+                    """, (start_date,)).fetchall()
+                
+                if not rows:
+                    client.send_message(to=user_id, text="ℹ️ Детальных записей нет.")
+                    return
+                
+                # Group by Date -> User
+                grouped = {}
+                for r in rows:
+                    wd, name, loc, act, h = r
+                    grouped.setdefault(wd, {}).setdefault(name, []).append((loc, act, h))
+                
+                lines = [f"📋 *Детализация Terra - {calendar.month_name[today.month]}*"]
+                
+                for d in sorted(grouped.keys(), reverse=True):
+                    d_str = date.fromisoformat(d).strftime("%d.%m")
+                    lines.append(f"\n📅 *{d_str}*")
+                    for name in sorted(grouped[d].keys()):
+                        lines.append(f"👤 *{name}*")
+                        for loc, act, h in grouped[d][name]:
+                            lines.append(f"   • {loc} — {act}: *{h}* ч")
+                
+                # Split message if too long (WhatsApp limit ~4096 chars)
+                full_text = "\n".join(lines)
+                if len(full_text) > 3000:
+                    # Simple split by chunks
+                    chunks = [full_text[i:i+3000] for i in range(0, len(full_text), 3000)]
+                    for chunk in chunks:
+                        client.send_message(to=user_id, text=chunk)
+                else:
+                    client.send_message(to=user_id, text=full_text)
+                return
+
+            elif st_type == "brig":
+                today = date.today()
+                start_date = date(today.year, today.month, 1).isoformat()
+                
+                with connect() as con, closing(con.cursor()) as c:
+                    rows = c.execute("""
+                        SELECT work_date, username, work_type, rows, bags, workers, field
+                        FROM brigadier_reports
+                        WHERE work_date >= ?
+                        ORDER BY work_date DESC, username ASC
+                    """, (start_date,)).fetchall()
+                
+                if not rows:
+                    client.send_message(to=user_id, text="ℹ️ Детальных записей нет.")
+                    return
+                
+                # Group by Date -> User
+                grouped = {}
+                for r in rows:
+                    wd, name, w_type, w_rows, w_bags, w_workers, w_field = r
+                    grouped.setdefault(wd, {}).setdefault(name, []).append((w_type, w_rows, w_bags, w_workers, w_field))
+                
+                lines = [f"📋 *Детализация Бригадиры - {calendar.month_name[today.month]}*"]
+                
+                for d in sorted(grouped.keys(), reverse=True):
+                    d_str = date.fromisoformat(d).strftime("%d.%m")
+                    lines.append(f"\n📅 *{d_str}*")
+                    for name in sorted(grouped[d].keys()):
+                        lines.append(f"👷 *{name}*")
+                        for w_type, w_rows, w_bags, w_workers, w_field in grouped[d][name]:
+                            field_info = f" ({w_field})" if w_field else ""
+                            if w_type == "Кабачок":
+                                lines.append(f"   • 🥒 {w_rows}р, {w_workers}чел{field_info}")
+                            else:
+                                lines.append(f"   • 🥔 {w_rows}р, {w_bags}с, {w_workers}чел{field_info}")
+                
+                # Split message if too long
+                full_text = "\n".join(lines)
+                if len(full_text) > 3000:
+                    chunks = [full_text[i:i+3000] for i in range(0, len(full_text), 3000)]
+                    for chunk in chunks:
+                        client.send_message(to=user_id, text=chunk)
+                else:
+                    client.send_message(to=user_id, text=full_text)
+                return
 
     # 2. Обработка состояний (FSM)
     state = get_state(user_id)
@@ -1058,7 +1981,7 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
             lines = ["Выберите *вид работы* (отправьте номер или название):"]
             for i, (aid, name) in enumerate(activities, 1):
                 lines.append(f"{i}. {name}")
-            lines.append(f"{len(activities) + 1}. 📝 Прочее (свой вариант)")
+            lines.append(f"{len(activities) + 1}. 📝 Прочее")
             lines.append("\n0. 🔙 Назад")
             
             text = "\n".join(lines)
@@ -1121,46 +2044,24 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
         work_data["loc_grp"] = grp
         work_data["location"] = location_name
         state["data"]["work"] = work_data
-        set_state(user_id, "pick_date", state["data"])
         
-        today = date.today()
-        dates = []
-        lines = ["Выберите *дату* (отправьте номер):"]
-        for i in range(7):
-            d = today - timedelta(days=i)
-            label = "Сегодня" if i == 0 else ("Вчера" if i == 1 else d.strftime("%d.%m"))
-            dates.append(d.isoformat())
-            lines.append(f"{i+1}. {label} ({d.strftime('%d.%m.%Y')})")
-        lines.append("\n0. 🔙 Назад")
-        
-        state["data"]["dates_list"] = dates
-        set_state(user_id, "waiting_date_selection", state["data"])
-        
-        text = "\n".join(lines)
-        client.send_message(to=user_id, text=text)
+        # New flow: Date is already selected, go to hours
+        set_state(user_id, "waiting_hours", state["data"])
+        client.send_message(to=user_id, text="Введите *количество часов*:")
         return
 
-    if current_state == "waiting_date_selection":
+    if current_state == "waiting_date_selection_universal":
         if message_text == "0":
-            work_data = state["data"].get("work", {})
-            lg = work_data.get("loc_grp")
-            
-            locations = list_locations_with_id(lg)
-            state["data"]["locs"] = locations
-            set_state(user_id, "waiting_location_selection", state["data"])
-            
-            lines = ["Выберите *место* (отправьте номер или название):"]
-            for i, (lid, name) in enumerate(locations, 1):
-                lines.append(f"{i}. {name}")
-            lines.append("\n0. 🔙 Назад")
-            
-            text = "\n".join(lines)
-            client.send_message(to=user_id, text=text)
+            # Back button logic depends on where we came from
+            # For now, just go to root menu
+            clear_state(user_id)
+            u = get_user(user_id)
+            show_main_menu(client, user_id, u)
             return
 
         dates = state["data"].get("dates_list", [])
         if not message_text.isdigit():
-            client.send_message(to=user_id, text="❌ Введите номер даты из списка (1-7) или 0.")
+            client.send_message(to=user_id, text="❌ Введите номер даты из списка или 0.")
             return
         
         idx = int(message_text) - 1
@@ -1169,36 +2070,29 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
             return
             
         selected_date = dates[idx]
+        next_prefix = state["data"].get("next_prefix")
         
-        work_data = state["data"].get("work", {})
-        work_data["work_date"] = selected_date
-        state["data"]["work"] = work_data
-        
-        set_state(user_id, "waiting_hours_input", state["data"])
-        client.send_message(to=user_id, text="Введите *количество часов* (от 1 до 24):\n0. 🔙 Назад")
+        if next_prefix == "work:date":
+            # Worker flow
+            set_state(user_id, "pick_work_group", {"date": selected_date})
+            buttons = [
+                Button(title="Техника", callback_data="work:grp:tech"),
+                Button(title="Ручная", callback_data="work:grp:hand"),
+                Button(title="🔙 Назад", callback_data="menu:root"),
+            ]
+            d_str = date.fromisoformat(selected_date).strftime("%d.%m.%Y")
+            client.send_message(to=user_id, text=f"📅 Дата: *{d_str}*\n\nВыберите *тип работы*:", buttons=buttons)
+            
+        elif next_prefix == "brig:date":
+            # Brigadier flow
+            set_state(user_id, "brig_menu_selected", {"date": selected_date})
+            show_brigadier_menu(client, user_id, selected_date)
+            
         return
 
-    if current_state == "waiting_hours_input":
-        if message_text == "0":
-            today = date.today()
-            dates = []
-            lines = ["Выберите *дату* (отправьте номер):"]
-            for i in range(7):
-                d = today - timedelta(days=i)
-                label = "Сегодня" if i == 0 else ("Вчера" if i == 1 else d.strftime("%d.%m"))
-                dates.append(d.isoformat())
-                lines.append(f"{i+1}. {label} ({d.strftime('%d.%m.%Y')})")
-            lines.append("\n0. 🔙 Назад")
-            
-            state["data"]["dates_list"] = dates
-            set_state(user_id, "waiting_date_selection", state["data"])
-            
-            text = "\n".join(lines)
-            client.send_message(to=user_id, text=text)
-            return
-
+    if current_state == "waiting_hours":
         if not message_text.isdigit():
-            client.send_message(to=user_id, text="❌ Введите число (1-24) или 0.")
+            client.send_message(to=user_id, text="❌ Введите число (1-24).")
             return
         
         hours = int(message_text)
@@ -1207,51 +2101,33 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
             return
             
         work_data = state["data"].get("work", {})
-        work_date = work_data.get("work_date")
         
-        already = sum_hours_for_user_date(user_id, work_date)
-        if already + hours > 24:
-            max_can_add = 24 - already
-            
-            rows = fetch_stats_range_for_user(user_id, work_date, work_date)
-            report_lines = []
-            for _, loc, act, h in rows:
-                report_lines.append(f"• {loc} — {act}: *{h}* ч")
-            
-            reports_text = "\n".join(report_lines) if report_lines else "Нет записей"
-            
-            error_msg = (
-                f"❗ *Превышен лимит часов*\n\n"
-                f"Уже записано на {work_date}: *{already}* ч\n"
-                f"Вы хотите добавить: *{hours}* ч\n"
-                f"Максимум: *24* ч\n"
-                f"Можно добавить еще: *{max_can_add}* ч\n\n"
-                f"📋 *Ваши записи за этот день:*\n{reports_text}\n\n"
-                f"Пожалуйста, введите корректное количество часов (или 0 для возврата):"
-            )
-            client.send_message(to=user_id, text=error_msg)
-            return
-
+        # Save report
         u = get_user(user_id)
-        rid = insert_report(
+        reg_name = u.get("full_name") if u else user_id
+        
+        report_id = insert_report(
             user_id=user_id,
-            reg_name=(u.get("full_name") or ""),
-            location=work_data["location"],
-            loc_grp=work_data["loc_grp"],
-            activity=work_data["activity"],
-            act_grp=work_data["grp"],
-            work_date=work_data["work_date"],
+            reg_name=reg_name,
+            location=work_data.get("location"),
+            loc_grp=work_data.get("loc_grp"),
+            activity=work_data.get("activity"),
+            act_grp=work_data.get("grp"),
+            work_date=work_data.get("date"),
             hours=hours
         )
         
+        d_str = date.fromisoformat(work_data.get("date")).strftime("%d.%m.%Y")
+        
         text = (
-            f"✅ *Сохранено*\n\n"
-            f"Дата: *{work_data['work_date']}*\n"
-            f"Место: *{work_data['location']}*\n"
-            f"Работа: *{work_data['activity']}*\n"
+            f"✅ *Отчет сохранен*\n\n"
+            f"📅 Дата: *{d_str}*\n"
+            f"Работа: *{work_data.get('activity')}*\n"
+            f"Место: *{work_data.get('location')}*\n"
             f"Часы: *{hours}*\n"
-            f"ID записи: `#{rid}`"
+            f"ID: `#{report_id}`"
         )
+        
         clear_state(user_id)
         client.send_message(to=user_id, text=text)
         show_main_menu(client, user_id, u)
@@ -1259,8 +2135,9 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
 
     if current_state == "waiting_record_selection":
         if message_text == "0":
-            u = get_user(user_id)
+            client.send_message(to=user_id, text="🔄 Отмена редактирования")
             clear_state(user_id)
+            u = get_user(user_id)
             show_main_menu(client, user_id, u)
             return
 
@@ -1284,15 +2161,114 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
             f"Место: {loc}\n"
             f"Работа: {act}\n"
             f"Часы: *{h}*\n\n"
-            f"Выберите действие:"
+            f"Введите новое количество часов:"
         )
         
-        buttons = [
-            Button(title="🖊 Править часы", callback_data=f"edit:chg:{rid}:{wdate}"),
-            Button(title="🗑 Удалить", callback_data=f"edit:del:{rid}"),
-            Button(title="🔙 Отмена", callback_data="menu:root"),
-        ]
-        client.send_message(to=user_id, text=text, buttons=buttons)
+        state["data"]["edit_id"] = rid
+        state["data"]["edit_date"] = wdate
+        set_state(user_id, "waiting_edit_hours", state["data"])
+        client.send_message(to=user_id, text=text)
+        return
+
+    if current_state == "waiting_del_selection":
+        if message_text == "0":
+            client.send_message(to=user_id, text="🔄 Отмена удаления")
+            clear_state(user_id)
+            u = get_user(user_id)
+            show_main_menu(client, user_id, u)
+            return
+
+        if not message_text.isdigit():
+            client.send_message(to=user_id, text="❌ Введите номер записи из списка или 0.")
+            return
+        
+        idx = int(message_text) - 1
+        records = state["data"].get("del_records", [])
+        
+        if not (0 <= idx < len(records)):
+            client.send_message(to=user_id, text="❌ Неверный номер.")
+            return
+            
+        r = records[idx]
+        rid, wdate, act, loc, h, _ = r
+        
+        if delete_report(rid, user_id):
+            client.send_message(to=user_id, text="✅ Запись удалена.")
+        else:
+            client.send_message(to=user_id, text="❌ Ошибка удаления.")
+            
+        clear_state(user_id)
+        u = get_user(user_id)
+        show_main_menu(client, user_id, u)
+        return
+
+    if current_state == "wait_del_brig_select":
+        if message_text == "0":
+            client.send_message(to=user_id, text="🔄 Отмена")
+            clear_state(user_id)
+            u = get_user(user_id)
+            show_main_menu(client, user_id, u)
+            return
+            
+        idx = int(message_text) - 1
+        records = state["data"].get("del_list_brig", [])
+        if not (0 <= idx < len(records)):
+            client.send_message(to=user_id, text="❌ Неверный номер.")
+            return
+            
+        rid = records[idx][0]
+        # Delete brigadier report
+        with connect() as con, closing(con.cursor()) as c:
+            c.execute("DELETE FROM brigadier_reports WHERE id=?", (rid,))
+            con.commit()
+            
+        client.send_message(to=user_id, text="✅ Запись удалена.")
+        clear_state(user_id)
+        u = get_user(user_id)
+        show_main_menu(client, user_id, u)
+        return
+
+    if current_state == "wait_edit_brig_select":
+        # For simplicity, we only allow deleting brigadier reports for now or re-creating.
+        # Editing complex brigadier reports (rows/bags/workers) via chat is cumbersome.
+        # Let's just say "Use delete and create new" or implement simple edit if needed.
+        # But user asked for "Edit" button. Let's allow editing rows for now.
+        
+        if message_text == "0":
+            client.send_message(to=user_id, text="🔄 Отмена")
+            clear_state(user_id)
+            u = get_user(user_id)
+            show_main_menu(client, user_id, u)
+            return
+            
+        idx = int(message_text) - 1
+        records = state["data"].get("edit_list_brig", [])
+        if not (0 <= idx < len(records)):
+            client.send_message(to=user_id, text="❌ Неверный номер.")
+            return
+            
+        rid = records[idx][0]
+        state["data"]["edit_brig_id"] = rid
+        set_state(user_id, "wait_edit_brig_rows", state["data"])
+        client.send_message(to=user_id, text="Введите новое количество *рядов*:")
+        return
+
+    if current_state == "wait_edit_brig_rows":
+        if not message_text.isdigit():
+            client.send_message(to=user_id, text="❌ Введите число.")
+            return
+        
+        new_rows = int(message_text)
+        rid = state["data"].get("edit_brig_id")
+        
+        with connect() as con, closing(con.cursor()) as c:
+            c.execute("UPDATE brigadier_reports SET rows=? WHERE id=?", (new_rows, rid))
+            con.commit()
+            
+        client.send_message(to=user_id, text="✅ Количество рядов обновлено.")
+        clear_state(user_id)
+        u = get_user(user_id)
+        show_main_menu(client, user_id, u)
         return
 
     if current_state == "waiting_edit_hours":
@@ -1409,6 +2385,262 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
         u = get_user(user_id)
         show_main_menu(client, user_id, u)
         return
+    
+    # -----------------------------
+    # Обработчики для бригадиров
+    # -----------------------------
+    
+    # Команда /бриг для админов - меню добавления бригадира
+    if norm_text in {"бриг", "/бриг"}:
+        if not is_admin(user_id):
+            client.send_message(to=user_id, text="❌ Нет прав. Эта команда доступна только администраторам.")
+            return
+        
+        # Показываем меню управления бригадирами
+        buttons = [
+            Button(title="➕ Добавить бригадира", callback_data="adm:add:brigadier"),
+            Button(title="➖ Удалить бригадира", callback_data="adm:del:brigadier"),
+            Button(title="📋 Список бригадиров", callback_data="adm:list:brigadiers"),
+        ]
+        client.send_message(to=user_id, text="👷 *Управление бригадирами*:", buttons=buttons)
+        return
+    
+    # Форма кабачков: ряды
+    if current_state == "brig_zucchini_rows":
+        if not message_text.isdigit():
+            client.send_message(to=user_id, text="❌ Введите число (количество рядов):")
+            return
+        rows = int(message_text)
+        state["data"]["rows"] = rows
+        set_state(user_id, "brig_zucchini_field", state["data"])
+        client.send_message(to=user_id, text="Введите *название поля*:")
+        return
+    
+    # Форма кабачков: поле
+    if current_state == "brig_zucchini_field":
+        state["data"]["field"] = message_text
+        set_state(user_id, "brig_zucchini_workers", state["data"])
+        client.send_message(to=user_id, text="Введите *количество людей*:")
+        return
+    
+    # Форма кабачков: люди (финальный шаг)
+    if current_state == "brig_zucchini_workers":
+        if not message_text.isdigit():
+            client.send_message(to=user_id, text="❌ Введите число (количество людей):")
+            return
+        workers = int(message_text)
+        
+        # Получаем дату из состояния
+        work_date = state["data"].get("date", date.today().isoformat())
+        
+        # Сохраняем отчет
+        u = get_user(user_id)
+        username = u.get("full_name") if u else user_id
+        report_id = save_brigadier_report(
+            user_id=user_id,
+            username=username,
+            work_type=state["data"]["work_type"],
+            rows=state["data"]["rows"],
+            field=state["data"]["field"],
+            bags=0,  # Для кабачков сетки не используются
+            workers=workers,
+            work_date=work_date
+        )
+        
+        # Авто-экспорт
+        if GOOGLE_SHEETS_AVAILABLE:
+            try:
+                export_brigadier_report_to_sheet(report_id)
+            except Exception as e:
+                logging.error(f"Auto-export error: {e}")
+        
+        # Форматируем дату для вывода
+        d_str = date.fromisoformat(work_date).strftime("%d.%m.%Y")
+        
+        text = (
+            f"✅ *Отчет сохранен*\n\n"
+            f"📅 Дата: *{d_str}*\n"
+            f"Тип: *{state['data']['work_type']}*\n"
+            f"Рядов: *{state['data']['rows']}*\n"
+            f"Поле: *{state['data']['field']}*\n"
+            f"Людей: *{workers}*\n"
+            f"ID отчета: `#{report_id}`"
+        )
+        clear_state(user_id)
+        client.send_message(to=user_id, text=text)
+        show_main_menu(client, user_id, u)
+        return
+    
+    # Форма картошки: ряды
+    if current_state == "brig_potato_rows":
+        if not message_text.isdigit():
+            client.send_message(to=user_id, text="❌ Введите число (количество выкопанных рядов):")
+            return
+        rows = int(message_text)
+        state["data"]["rows"] = rows
+        set_state(user_id, "brig_potato_field", state["data"])
+        client.send_message(to=user_id, text="Введите *название поля*:")
+        return
+
+    # Форма картошки: поле
+    if current_state == "brig_potato_field":
+        state["data"]["field"] = message_text
+        set_state(user_id, "brig_potato_bags", state["data"])
+        client.send_message(to=user_id, text="Введите *количество сеток*:")
+        return
+    
+    # Форма картошки: сетки
+    if current_state == "brig_potato_bags":
+        if not message_text.isdigit():
+            client.send_message(to=user_id, text="❌ Введите число (количество сеток):")
+            return
+        bags = int(message_text)
+        state["data"]["bags"] = bags
+        set_state(user_id, "brig_potato_workers", state["data"])
+        client.send_message(to=user_id, text="Введите *количество людей*:")
+        return
+    
+    # Форма картошки: люди (финальный шаг)
+    if current_state == "brig_potato_workers":
+        if not message_text.isdigit():
+            client.send_message(to=user_id, text="❌ Введите число (количество людей):")
+            return
+        workers = int(message_text)
+        
+        # Получаем дату из состояния
+        work_date = state["data"].get("date", date.today().isoformat())
+        
+        # Сохраняем отчет
+        u = get_user(user_id)
+        username = u.get("full_name") if u else user_id
+        report_id = save_brigadier_report(
+            user_id=user_id,
+            username=username,
+            work_type=state["data"]["work_type"],
+            rows=state["data"]["rows"],
+            field=state["data"]["field"],
+            bags=state["data"]["bags"],
+            workers=workers,
+            work_date=work_date
+        )
+        
+        # Форматируем дату для вывода
+        d_str = date.fromisoformat(work_date).strftime("%d.%m.%Y")
+        
+        text = (
+            f"✅ *Отчет сохранен*\n\n"
+            f"📅 Дата: *{d_str}*\n"
+            f"Тип: *{state['data']['work_type']}*\n"
+            f"Выкопано рядов: *{state['data']['rows']}*\n"
+            f"Сеток: *{state['data']['bags']}*\n"
+            f"Людей: *{workers}*\n"
+            f"ID отчета: `#{report_id}`"
+        )
+        clear_state(user_id)
+        client.send_message(to=user_id, text=text)
+        show_main_menu(client, user_id, u)
+        return
+    
+    # Админ: добавление бригадира
+    if current_state == "adm_wait_brigadier_add":
+        # Ожидаем номер телефона
+        phone = message_text.strip()
+        
+        # Если ввели "Номер Имя"
+        parts = phone.split(maxsplit=1)
+        if len(parts) == 2 and parts[0].isdigit():
+            phone = parts[0]
+            name = parts[1]
+            
+            # Сразу добавляем
+            target_user = get_user(phone)
+            if not target_user:
+                upsert_user(phone, name, TZ)
+            else:
+                upsert_user(phone, name, TZ)
+                
+            if add_brigadier(phone, name, name, user_id):
+                client.send_message(to=user_id, text=f"✅ Бригадир *{name}* ({phone}) добавлен.")
+            else:
+                client.send_message(to=user_id, text="❌ Этот пользователь уже является бригадиром.")
+            
+            clear_state(user_id)
+            u = get_user(user_id)
+            show_main_menu(client, user_id, u)
+            return
+
+        # Если только номер
+        if not phone.isdigit() or len(phone) < 10:
+            client.send_message(to=user_id, text="❌ Введите корректный номер телефона (например: 79001234567) или 'Номер Имя':")
+            return
+        
+        # Сохраняем номер и спрашиваем имя
+        state["data"]["brig_phone"] = phone
+        set_state(user_id, "adm_wait_brigadier_name", state["data"])
+        client.send_message(to=user_id, text="✏️ Введите *Имя бригадира*:")
+        return
+
+    # Админ: ввод имени бригадира
+    if current_state == "adm_wait_brigadier_name":
+        name = message_text.strip()
+        if len(name) < 2:
+            client.send_message(to=user_id, text="❌ Слишком короткое имя. Попробуйте еще раз:")
+            return
+            
+        phone = state["data"].get("brig_phone")
+        if not phone:
+            client.send_message(to=user_id, text="❌ Ошибка состояния. Начните заново.")
+            clear_state(user_id)
+            return
+            
+        # Создаем/обновляем пользователя
+        upsert_user(phone, name, TZ)
+        
+        if add_brigadier(phone, name, name, user_id):
+            client.send_message(to=user_id, text=f"✅ Бригадир *{name}* ({phone}) добавлен.")
+        else:
+            client.send_message(to=user_id, text="❌ Этот пользователь уже является бригадиром.")
+        
+        clear_state(user_id)
+        u = get_user(user_id)
+        show_main_menu(client, user_id, u)
+        return
+    
+    # Админ: удаление бригадира
+    if current_state == "adm_wait_brigadier_del":
+        if message_text == "0":
+            buttons = [
+                Button(title="➕ Добавить бригадира", callback_data="adm:add:brigadier"),
+                Button(title="➖ Удалить бригадира", callback_data="adm:del:brigadier"),
+                Button(title="📋 Список бригадиров", callback_data="adm:list:brigadiers"),
+            ]
+            client.send_message(to=user_id, text="👷 *Управление бригадирами*:", buttons=buttons)
+            clear_state(user_id)
+            return
+        
+        if not message_text.isdigit():
+            client.send_message(to=user_id, text="❌ Введите номер бригадира из списка или 0 для возврата.")
+            return
+        
+        idx = int(message_text) - 1
+        brigadiers = state["data"].get("brigadiers_list", [])
+        
+        if not (0 <= idx < len(brigadiers)):
+            client.send_message(to=user_id, text="❌ Неверный номер.")
+            return
+        
+        brig = brigadiers[idx]
+        brig_id, brig_uname, brig_fname, _, _ = brig
+        
+        if remove_brigadier(brig_id):
+            client.send_message(to=user_id, text=f"✅ Бригадир *{brig_fname or brig_uname}* удален.")
+        else:
+            client.send_message(to=user_id, text="❌ Не удалось удалить.")
+        
+        clear_state(user_id)
+        u = get_user(user_id)
+        show_main_menu(client, user_id, u)
+        return
 
     # 3. Если нет состояния и это не команда -> Показываем меню (если юзер зарегистрирован)
     u = get_user(user_id)
@@ -1428,7 +2660,27 @@ def webhook():
             return request.args.get("hub.challenge")
         return "Invalid verify token", 403
     
-    wa.process_webhook(request.json)
+    data = request.json
+    if not data:
+        return "Empty payload", 400
+        
+    # Deduplication check for messages
+    try:
+        entry = data.get("entry", [])
+        if entry:
+            changes = entry[0].get("changes", [])
+            if changes:
+                value = changes[0].get("value", {})
+                messages = value.get("messages", [])
+                if messages:
+                    msg_id = messages[0].get("id")
+                    if msg_id and is_message_processed(msg_id):
+                        logging.info(f"♻️ Duplicate message ignored: {msg_id}")
+                        return "Duplicate ignored", 200
+    except Exception as e:
+        logging.error(f"Error checking duplicate: {e}")
+
+    wa.process_webhook(data)
     return "OK", 200
 
 if __name__ == "__main__":
