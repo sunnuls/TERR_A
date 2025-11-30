@@ -86,12 +86,20 @@ if not VERIFY_TOKEN:
 
 TZ = os.getenv("TZ", "Europe/Moscow").strip()
 
+def _normalize_phone(phone: str) -> str:
+    """Нормализует номер телефона: убирает все нецифровые символы"""
+    if not phone:
+        return ""
+    return "".join(filter(str.isdigit, phone))
+
 def _parse_admin_ids(s: str) -> List[str]:
     out = []
     for part in (s or "").replace(" ", "").split(","):
         if not part:
             continue
-        out.append(part.strip())
+        normalized = _normalize_phone(part.strip())
+        if normalized:
+            out.append(normalized)
     return out
 
 ADMIN_IDS = set(_parse_admin_ids(os.getenv("ADMIN_IDS", "")))
@@ -577,15 +585,15 @@ def sum_hours_for_user_date(user_id:str, work_date:str, exclude_report_id: Optio
     with connect() as con, closing(con.cursor()) as c:
         if exclude_report_id:
             if include_it:
-                r = c.execute("SELECT COALESCE(SUM(hours),0) FROM reports WHERE user_id=? AND work_date=? AND id<>?",
-                              (user_id, work_date, exclude_report_id)).fetchone()
-            else:
+            r = c.execute("SELECT COALESCE(SUM(hours),0) FROM reports WHERE user_id=? AND work_date=? AND id<>?",
+                          (user_id, work_date, exclude_report_id)).fetchone()
+        else:
                 r = c.execute("SELECT COALESCE(SUM(hours),0) FROM reports WHERE user_id=? AND work_date=? AND id<>? AND location_grp != 'it' AND activity_grp != 'it'",
                               (user_id, work_date, exclude_report_id)).fetchone()
         else:
             if include_it:
-                r = c.execute("SELECT COALESCE(SUM(hours),0) FROM reports WHERE user_id=? AND work_date=?",
-                              (user_id, work_date)).fetchone()
+            r = c.execute("SELECT COALESCE(SUM(hours),0) FROM reports WHERE user_id=? AND work_date=?",
+                          (user_id, work_date)).fetchone()
             else:
                 r = c.execute("SELECT COALESCE(SUM(hours),0) FROM reports WHERE user_id=? AND work_date=? AND location_grp != 'it' AND activity_grp != 'it'",
                               (user_id, work_date)).fetchone()
@@ -646,7 +654,11 @@ def is_admin(user_id: str) -> bool:
 
 def is_it(user_id: str) -> bool:
     """Проверка, является ли пользователь IT"""
-    return user_id in IT_IDS
+    normalized_user_id = _normalize_phone(user_id)
+    result = normalized_user_id in IT_IDS
+    if result:
+        logging.info(f"✅ IT пользователь обнаружен: {user_id} (нормализован: {normalized_user_id})")
+    return result
 
 # Brigadier функции
 def is_brigadier(user_id: str) -> bool:
@@ -897,7 +909,7 @@ def show_main_menu(wa: WhatsApp360Client, user_id: str, u: dict):
             Button(title="📊 Статистика", callback_data="menu:stats"),
             Button(title="Ещё...", callback_data="menu:more"),
         ]
-        text = f"👤 *{name}*\n\nВыберите действие: 🌻"
+    text = f"👤 *{name}*\n\nВыберите действие: 🌻"
     
     # Для админов добавляем подсказку по скрытым командам
     if is_admin(user_id) and not it_user:
@@ -1549,16 +1561,16 @@ def handle_callback(client, btn: CallbackObject):
             return
         else:
             # Fallback: return to location group selection
-            state = get_state(user_id)
-            work_data = state["data"].get("work", {})
-            activity_name = work_data.get("activity", "работа")
-            
-            buttons = [
-                Button(title="Поля", callback_data="work:locgrp:fields"),
-                Button(title="Склад", callback_data="work:locgrp:ware"),
+        state = get_state(user_id)
+        work_data = state["data"].get("work", {})
+        activity_name = work_data.get("activity", "работа")
+        
+        buttons = [
+            Button(title="Поля", callback_data="work:locgrp:fields"),
+            Button(title="Склад", callback_data="work:locgrp:ware"),
                 Button(title="🔙 Назад", callback_data="back:prev"),
-            ]
-            client.send_message(to=user_id, text=f"✅ Выбрано: *{activity_name}*\n\nТеперь выберите *локацию*:", buttons=buttons)
+        ]
+        client.send_message(to=user_id, text=f"✅ Выбрано: *{activity_name}*\n\nТеперь выберите *локацию*:", buttons=buttons)
         return
     
     elif data.startswith("work:date:"):
@@ -1710,7 +1722,7 @@ def handle_callback(client, btn: CallbackObject):
         # Возвращаемся к вводу часов
         set_state(user_id, "it_waiting_hours", {}, save_to_history=False)
         client.send_message(to=user_id, text="Введите *количество часов*:\n\n0. 🔙 Назад")
-
+    
     elif data == "confirm:worker":
         state = get_state(user_id)
         temp_report = state["data"].get("temp_report")
@@ -2310,11 +2322,12 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
             handle_callback(client, btn_obj)
             return
 
-    # Команда для проверки IT роли и показа меню
+    # Команда для проверки IT роли и показа меню (обрабатывается ДО команды menu)
     if norm_text in {"it", "ит", "itmenu", "итменю", "checkit", "чекит"}:
-        # Проверяем IT роль
+        # Нормализуем номер для сравнения
+        normalized_user_id = _normalize_phone(user_id)
         is_it_user = is_it(user_id)
-        logging.info(f"🔍 Проверка IT роли для {user_id}: is_it={is_it_user}, IT_IDS={IT_IDS}")
+        logging.info(f"🔍 Проверка IT роли для {user_id} (нормализован: {normalized_user_id}): is_it={is_it_user}, IT_IDS={IT_IDS}")
         
         if is_it_user:
             u = get_user(user_id)
@@ -2326,38 +2339,22 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
             debug_info = (
                 f"❌ *Ваш номер не найден в IT_IDS*\n\n"
                 f"Ваш номер: `{user_id}`\n"
+                f"Нормализованный: `{normalized_user_id}`\n"
                 f"Текущие IT_IDS: {', '.join(IT_IDS) if IT_IDS else 'не настроены'}\n\n"
                 f"Для добавления добавьте ваш номер в .env на сервере:\n"
-                f"`IT_IDS={user_id}`\n\n"
+                f"`IT_IDS={normalized_user_id}`\n\n"
                 f"После этого перезапустите бота командой:\n"
                 f"`systemctl restart terra-bot.service`"
             )
             client.send_message(to=user_id, text=debug_info)
         return
-
-    # Команда для проверки IT роли и принудительного показа IT меню
-    if norm_text in {"it", "ит", "itmenu", "итменю", "checkit", "чекит"}:
-        # Проверяем IT роль
-        is_it_user = is_it(user_id)
-        logging.info(f"🔍 Проверка IT роли для {user_id}: is_it={is_it_user}, IT_IDS={IT_IDS}")
-        
-        if is_it_user:
-            u = get_user(user_id)
-            clear_state(user_id)
-            show_main_menu(client, user_id, u)
-            client.send_message(to=user_id, text="✅ IT меню активировано!")
-        else:
-            # Показываем отладочную информацию
-            debug_info = (
-                f"❌ Ваш номер не найден в IT_IDS\n\n"
-                f"Ваш номер: `{user_id}`\n"
-                f"Текущие IT_IDS: {', '.join(IT_IDS) if IT_IDS else 'не настроены'}\n\n"
-                f"Для добавления добавьте ваш номер в .env:\n"
-                f"`IT_IDS={user_id}`\n\n"
-                f"После этого перезапустите бота."
-            )
-            client.send_message(to=user_id, text=debug_info)
-        return
+    
+    # Обработка звездочки для не-IT пользователей
+    if message_text in {"⭐", "star", "звездочка", "звезда"}:
+        if not is_it(user_id):
+            client.send_message(to=user_id, text="⭐\n\nЭта команда доступна только для IT пользователей.")
+            return
+        # Для IT пользователей звездочка обрабатывается через callback
 
     if norm_text in {"menu", "меню"}:
         cmd_menu(client, msg)
