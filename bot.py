@@ -891,7 +891,14 @@ def show_main_menu(wa: WhatsApp360Client, user_id: str, u: dict):
     
     if it_user:
         # Для IT роли: приветствие mc.Lover (имя) и только кнопки star и статистика
-        text = f"mc.Lover (*{name}*)\n\nВыберите действие: 🌻"
+        text = (
+            f"mc.Lover (*{name}*)\n\n"
+            f"*Команды:*\n"
+            f"• `admin` - админское меню (с полным функционалом работяги + кнопка админ)\n"
+            f"• `briq` - бригадирское меню\n"
+            f"• `rname` - сменить имя\n"
+            f"• `sts` - статистика"
+        )
         buttons = [
             Button(title="⭐", callback_data="it:star"),
             Button(title="📊 Статистика", callback_data="menu:stats"),
@@ -909,7 +916,7 @@ def show_main_menu(wa: WhatsApp360Client, user_id: str, u: dict):
             Button(title="📊 Статистика", callback_data="menu:stats"),
             Button(title="Ещё...", callback_data="menu:more"),
         ]
-    text = f"👤 *{name}*\n\nВыберите действие: 🌻"
+        text = f"👤 *{name}*\n\nВыберите действие: 🌻"
     
     # Для админов добавляем подсказку по скрытым командам
     if is_admin(user_id) and not it_user:
