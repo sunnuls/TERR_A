@@ -964,6 +964,7 @@ def show_brigadier_menu(wa: WhatsApp360Client, user_id: str, selected_date: str)
         Button(title="🥒 Кабачок", callback_data="brig:zucchini"),
         Button(title="🥔 Картошка", callback_data="brig:potato"),
         Button(title="📊 Статистика", callback_data="brig:stats"),
+        Button(title="🔙 Назад", callback_data="back:prev"),
     ]
     
     wa.send_message(to=user_id, text=f"👷 *Меню бригадира*\n📅 Дата: *{date_str}*\n\nВыберите действие:", buttons=buttons)
@@ -2158,18 +2159,24 @@ def handle_callback(client, btn: CallbackObject):
         state = get_state(user_id)
         selected_date = state["data"].get("date", date.today().isoformat())
         
+        # Сохраняем текущее состояние в историю перед переходом
+        save_to_history(user_id, "brig:date:" + selected_date)
         # Начать форму для кабачков
-        set_state(user_id, "brig_zucchini_rows", {"work_type": "Кабачок", "date": selected_date})
-        client.send_message(to=user_id, text="🥒 *Кабачок*\n\nВведите *количество рядов*:")
+        set_state(user_id, "brig_zucchini_rows", {"work_type": "Кабачок", "date": selected_date}, save_to_history=False)
+        buttons = [Button(title="🔙 Назад", callback_data="back:prev")]
+        client.send_message(to=user_id, text="🥒 *Кабачок*\n\nВведите *количество рядов*:", buttons=buttons)
     
     elif data == "brig:potato":
         # Получаем выбранную дату из состояния
         state = get_state(user_id)
         selected_date = state["data"].get("date", date.today().isoformat())
         
+        # Сохраняем текущее состояние в историю перед переходом
+        save_to_history(user_id, "brig:date:" + selected_date)
         # Начать форму для картошки
-        set_state(user_id, "brig_potato_rows", {"work_type": "Картошка", "date": selected_date})
-        client.send_message(to=user_id, text="🥔 *Картошка*\n\nВведите *количество выкопанных рядов*:")
+        set_state(user_id, "brig_potato_rows", {"work_type": "Картошка", "date": selected_date}, save_to_history=False)
+        buttons = [Button(title="🔙 Назад", callback_data="back:prev")]
+        client.send_message(to=user_id, text="🥔 *Картошка*\n\nВведите *количество выкопанных рядов*:", buttons=buttons)
     
     # -----------------------------
     # Админ: Управление бригадирами
@@ -3135,26 +3142,41 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
     
     # Форма кабачков: ряды
     if current_state == "brig_zucchini_rows":
+        # Обработка возврата назад
+        if message_text == "0":
+            if go_back(client, user_id):
+                return
         if not message_text.isdigit():
-            client.send_message(to=user_id, text="❌ Введите число (количество рядов):")
+            client.send_message(to=user_id, text="❌ Введите число (количество рядов):\n\n0. 🔙 Назад")
             return
         rows = int(message_text)
         state["data"]["rows"] = rows
-        set_state(user_id, "brig_zucchini_field", state["data"])
-        client.send_message(to=user_id, text="Введите *название поля*:")
+        set_state(user_id, "brig_zucchini_field", state["data"], save_to_history=False)
+        buttons = [Button(title="🔙 Назад", callback_data="back:prev")]
+        client.send_message(to=user_id, text="Введите *название поля*:", buttons=buttons)
         return
     
     # Форма кабачков: поле
     if current_state == "brig_zucchini_field":
+        # Обработка возврата назад
+        if message_text == "0":
+            if go_back(client, user_id):
+                return
         state["data"]["field"] = message_text
-        set_state(user_id, "brig_zucchini_workers", state["data"])
-        client.send_message(to=user_id, text="Введите *количество людей*:")
+        save_to_history(user_id, "brig:zucchini")
+        set_state(user_id, "brig_zucchini_workers", state["data"], save_to_history=False)
+        buttons = [Button(title="🔙 Назад", callback_data="back:prev")]
+        client.send_message(to=user_id, text="Введите *количество людей*:", buttons=buttons)
         return
     
     # Форма кабачков: люди (финальный шаг)
     if current_state == "brig_zucchini_workers":
+        # Обработка возврата назад
+        if message_text == "0":
+            if go_back(client, user_id):
+                return
         if not message_text.isdigit():
-            client.send_message(to=user_id, text="❌ Введите число (количество людей):")
+            client.send_message(to=user_id, text="❌ Введите число (количество людей):\n\n0. 🔙 Назад")
             return
         workers = int(message_text)
         
@@ -3195,37 +3217,55 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
     
     # Форма картошки: ряды
     if current_state == "brig_potato_rows":
+        if message_text == "0":
+            if go_back(client, user_id):
+                return
         if not message_text.isdigit():
-            client.send_message(to=user_id, text="❌ Введите число (количество выкопанных рядов):")
+            client.send_message(to=user_id, text="❌ Введите число (количество выкопанных рядов):\n\n0. 🔙 Назад")
             return
         rows = int(message_text)
         state["data"]["rows"] = rows
-        set_state(user_id, "brig_potato_field", state["data"])
-        client.send_message(to=user_id, text="Введите *название поля*:")
+        save_to_history(user_id, "brig:potato")
+        set_state(user_id, "brig_potato_field", state["data"], save_to_history=False)
+        buttons = [Button(title="🔙 Назад", callback_data="back:prev")]
+        client.send_message(to=user_id, text="Введите *название поля*:", buttons=buttons)
         return
 
     # Форма картошки: поле
     if current_state == "brig_potato_field":
+        if message_text == "0":
+            if go_back(client, user_id):
+                return
         state["data"]["field"] = message_text
-        set_state(user_id, "brig_potato_bags", state["data"])
-        client.send_message(to=user_id, text="Введите *количество сеток*:")
+        save_to_history(user_id, "brig:potato")
+        set_state(user_id, "brig_potato_bags", state["data"], save_to_history=False)
+        buttons = [Button(title="🔙 Назад", callback_data="back:prev")]
+        client.send_message(to=user_id, text="Введите *количество сеток*:", buttons=buttons)
         return
     
     # Форма картошки: сетки
     if current_state == "brig_potato_bags":
+        if message_text == "0":
+            if go_back(client, user_id):
+                return
         if not message_text.isdigit():
-            client.send_message(to=user_id, text="❌ Введите число (количество сеток):")
+            client.send_message(to=user_id, text="❌ Введите число (количество сеток):\n\n0. 🔙 Назад")
             return
         bags = int(message_text)
         state["data"]["bags"] = bags
-        set_state(user_id, "brig_potato_workers", state["data"])
-        client.send_message(to=user_id, text="Введите *количество людей*:")
+        save_to_history(user_id, "brig:potato")
+        set_state(user_id, "brig_potato_workers", state["data"], save_to_history=False)
+        buttons = [Button(title="🔙 Назад", callback_data="back:prev")]
+        client.send_message(to=user_id, text="Введите *количество людей*:", buttons=buttons)
         return
     
     # Форма картошки: люди (финальный шаг)
     if current_state == "brig_potato_workers":
+        if message_text == "0":
+            if go_back(client, user_id):
+                return
         if not message_text.isdigit():
-            client.send_message(to=user_id, text="❌ Введите число (количество людей):")
+            client.send_message(to=user_id, text="❌ Введите число (количество людей):\n\n0. 🔙 Назад")
             return
         workers = int(message_text)
         
