@@ -100,6 +100,13 @@ logging.info(f"🔧 ADMIN_IDS loaded: {ADMIN_IDS}")
 IT_IDS = set(_parse_admin_ids(os.getenv("IT_IDS", "")))
 logging.info(f"🔧 IT_IDS loaded: {IT_IDS}")
 
+# GitHub Webhook секрет для автоматического обновления
+GITHUB_WEBHOOK_SECRET = os.getenv("GITHUB_WEBHOOK_SECRET", "")
+if GITHUB_WEBHOOK_SECRET:
+    logging.info("✅ GitHub Webhook секрет загружен")
+else:
+    logging.warning("⚠️ GITHUB_WEBHOOK_SECRET не установлен, автоматическое обновление отключено")
+
 DB_PATH = os.path.join(os.getcwd(), "reports_whatsapp.db")
 
 # Google Sheets настройки
@@ -557,14 +564,31 @@ def get_report(report_id:int):
             "work_date": r[8], "hours": r[9]
         }
 
-def sum_hours_for_user_date(user_id:str, work_date:str, exclude_report_id: Optional[int] = None) -> int:
+def sum_hours_for_user_date(user_id:str, work_date:str, exclude_report_id: Optional[int] = None, include_it: bool = False) -> int:
+    """
+    Получить сумму часов пользователя за дату.
+    
+    Args:
+        user_id: ID пользователя
+        work_date: Дата в формате ISO
+        exclude_report_id: ID отчета для исключения (при редактировании)
+        include_it: Включать ли IT отчеты (по умолчанию False - исключаем)
+    """
     with connect() as con, closing(con.cursor()) as c:
         if exclude_report_id:
-            r = c.execute("SELECT COALESCE(SUM(hours),0) FROM reports WHERE user_id=? AND work_date=? AND id<>?",
-                          (user_id, work_date, exclude_report_id)).fetchone()
+            if include_it:
+                r = c.execute("SELECT COALESCE(SUM(hours),0) FROM reports WHERE user_id=? AND work_date=? AND id<>?",
+                              (user_id, work_date, exclude_report_id)).fetchone()
+            else:
+                r = c.execute("SELECT COALESCE(SUM(hours),0) FROM reports WHERE user_id=? AND work_date=? AND id<>? AND location_grp != 'it' AND activity_grp != 'it'",
+                              (user_id, work_date, exclude_report_id)).fetchone()
         else:
-            r = c.execute("SELECT COALESCE(SUM(hours),0) FROM reports WHERE user_id=? AND work_date=?",
-                          (user_id, work_date)).fetchone()
+            if include_it:
+                r = c.execute("SELECT COALESCE(SUM(hours),0) FROM reports WHERE user_id=? AND work_date=?",
+                              (user_id, work_date)).fetchone()
+            else:
+                r = c.execute("SELECT COALESCE(SUM(hours),0) FROM reports WHERE user_id=? AND work_date=? AND location_grp != 'it' AND activity_grp != 'it'",
+                              (user_id, work_date)).fetchone()
         return int(r[0] or 0)
 
 def user_recent_24h_reports(user_id:str) -> List[tuple]:
@@ -848,6 +872,10 @@ def show_main_menu(wa: WhatsApp360Client, user_id: str, u: dict):
     # Проверяем роль пользователя
     it_user = is_it(user_id)
     brigadier = is_brigadier(user_id)
+    
+    # Отладочная информация для IT пользователей
+    if it_user:
+        logging.info(f"🔧 IT пользователь обнаружен в show_main_menu: {user_id}, IT_IDS={IT_IDS}")
     
     if it_user:
         # Для IT роли: приветствие mc.Lover (имя) и только кнопки star и статистика
@@ -1160,7 +1188,7 @@ def handle_callback(client, btn: CallbackObject):
             return
         # Запрашиваем количество часов
         set_state(user_id, "it_waiting_hours", {}, save_to_history=False)
-        client.send_message(to=user_id, text="Введите *количество часов*:")
+        client.send_message(to=user_id, text="Введите *количество часов*:\n\n0. 🔙 Назад")
         return
     
     if data == "menu:root":
@@ -1516,17 +1544,21 @@ def handle_callback(client, btn: CallbackObject):
         return
     
     elif data == "cancel_location":
-        # Cancel location selection, return to location group selection
-        state = get_state(user_id)
-        work_data = state["data"].get("work", {})
-        activity_name = work_data.get("activity", "работа")
-        
-        buttons = [
-            Button(title="Поля", callback_data="work:locgrp:fields"),
-            Button(title="Склад", callback_data="work:locgrp:ware"),
-            Button(title="🔙 Назад", callback_data="back:prev"),
-        ]
-        client.send_message(to=user_id, text=f"✅ Выбрано: *{activity_name}*\n\nТеперь выберите *локацию*:", buttons=buttons)
+        # Cancel location selection, return back using history
+        if go_back(client, user_id):
+            return
+        else:
+            # Fallback: return to location group selection
+            state = get_state(user_id)
+            work_data = state["data"].get("work", {})
+            activity_name = work_data.get("activity", "работа")
+            
+            buttons = [
+                Button(title="Поля", callback_data="work:locgrp:fields"),
+                Button(title="Склад", callback_data="work:locgrp:ware"),
+                Button(title="🔙 Назад", callback_data="back:prev"),
+            ]
+            client.send_message(to=user_id, text=f"✅ Выбрано: *{activity_name}*\n\nТеперь выберите *локацию*:", buttons=buttons)
         return
     
     elif data.startswith("work:date:"):
@@ -1603,8 +1635,11 @@ def handle_callback(client, btn: CallbackObject):
             state["data"]["work"] = work_data
             
             # Skip date selection (already done), go to hours
+            # Сохраняем текущее состояние в историю перед переходом
+            acts_kind = state["data"].get("acts_kind", "tech")
+            save_to_history(user_id, f"work:grp:{acts_kind}")
             set_state(user_id, "waiting_hours", state["data"], save_to_history=False)
-            client.send_message(to=user_id, text="Введите *количество часов*:")
+            client.send_message(to=user_id, text="Введите *количество часов*:\n\n0. 🔙 Назад")
             
         else:
             state["data"]["work"] = work_data
@@ -1674,7 +1709,7 @@ def handle_callback(client, btn: CallbackObject):
             return
         # Возвращаемся к вводу часов
         set_state(user_id, "it_waiting_hours", {}, save_to_history=False)
-        client.send_message(to=user_id, text="Введите *количество часов*:")
+        client.send_message(to=user_id, text="Введите *количество часов*:\n\n0. 🔙 Назад")
 
     elif data == "confirm:worker":
         state = get_state(user_id)
@@ -2275,6 +2310,55 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
             handle_callback(client, btn_obj)
             return
 
+    # Команда для проверки IT роли и показа меню
+    if norm_text in {"it", "ит", "itmenu", "итменю", "checkit", "чекит"}:
+        # Проверяем IT роль
+        is_it_user = is_it(user_id)
+        logging.info(f"🔍 Проверка IT роли для {user_id}: is_it={is_it_user}, IT_IDS={IT_IDS}")
+        
+        if is_it_user:
+            u = get_user(user_id)
+            clear_state(user_id)
+            show_main_menu(client, user_id, u)
+            client.send_message(to=user_id, text="✅ IT меню активировано!")
+        else:
+            # Показываем отладочную информацию
+            debug_info = (
+                f"❌ *Ваш номер не найден в IT_IDS*\n\n"
+                f"Ваш номер: `{user_id}`\n"
+                f"Текущие IT_IDS: {', '.join(IT_IDS) if IT_IDS else 'не настроены'}\n\n"
+                f"Для добавления добавьте ваш номер в .env на сервере:\n"
+                f"`IT_IDS={user_id}`\n\n"
+                f"После этого перезапустите бота командой:\n"
+                f"`systemctl restart terra-bot.service`"
+            )
+            client.send_message(to=user_id, text=debug_info)
+        return
+
+    # Команда для проверки IT роли и принудительного показа IT меню
+    if norm_text in {"it", "ит", "itmenu", "итменю", "checkit", "чекит"}:
+        # Проверяем IT роль
+        is_it_user = is_it(user_id)
+        logging.info(f"🔍 Проверка IT роли для {user_id}: is_it={is_it_user}, IT_IDS={IT_IDS}")
+        
+        if is_it_user:
+            u = get_user(user_id)
+            clear_state(user_id)
+            show_main_menu(client, user_id, u)
+            client.send_message(to=user_id, text="✅ IT меню активировано!")
+        else:
+            # Показываем отладочную информацию
+            debug_info = (
+                f"❌ Ваш номер не найден в IT_IDS\n\n"
+                f"Ваш номер: `{user_id}`\n"
+                f"Текущие IT_IDS: {', '.join(IT_IDS) if IT_IDS else 'не настроены'}\n\n"
+                f"Для добавления добавьте ваш номер в .env:\n"
+                f"`IT_IDS={user_id}`\n\n"
+                f"После этого перезапустите бота."
+            )
+            client.send_message(to=user_id, text=debug_info)
+        return
+
     if norm_text in {"menu", "меню"}:
         cmd_menu(client, msg)
         return
@@ -2531,8 +2615,11 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
         state["data"]["work"] = work_data
         
         # New flow: Date is already selected, go to hours
-        set_state(user_id, "waiting_hours", state["data"])
-        client.send_message(to=user_id, text="Введите *количество часов*:")
+        # Сохраняем текущее состояние в историю перед переходом
+        acts_kind = state["data"].get("acts_kind", "tech")
+        save_to_history(user_id, f"work:grp:{acts_kind}")
+        set_state(user_id, "waiting_hours", state["data"], save_to_history=False)
+        client.send_message(to=user_id, text="Введите *количество часов*:\n\n0. 🔙 Назад")
         return
 
     if current_state == "waiting_date_selection_universal":
@@ -2582,17 +2669,69 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
             clear_state(user_id)
             return
         
+        # Обработка кнопки "Назад" (0)
+        if message_text == "0":
+            if go_back(client, user_id):
+                return
+            else:
+                # Fallback: возврат в главное меню
+                clear_state(user_id)
+                u = get_user(user_id)
+                show_main_menu(client, user_id, u)
+                return
+        
         if not message_text.isdigit():
-            client.send_message(to=user_id, text="❌ Введите число (1-24).")
+            client.send_message(to=user_id, text="❌ Введите число (1-24) или 0 для возврата назад.")
             return
         
         hours = int(message_text)
         if not (1 <= hours <= 24):
-            client.send_message(to=user_id, text="❌ Часы должны быть от 1 до 24.")
+            client.send_message(to=user_id, text="❌ Часы должны быть от 1 до 24 (или 0 для возврата назад).")
             return
         
         # Автоматически заполняем данные для IT отчета
         work_date = date.today().isoformat()
+        
+        # Проверка суммы часов за день (IT отчеты не учитываются в общей статистике, но проверяем их отдельно)
+        # Для IT роли проверяем только IT отчеты
+        with connect() as con, closing(con.cursor()) as c:
+            existing_it_hours = c.execute("""
+                SELECT COALESCE(SUM(hours), 0) 
+                FROM reports 
+                WHERE user_id=? AND work_date=? AND (location_grp='it' OR activity_grp='it')
+            """, (user_id, work_date)).fetchone()
+            existing_it_hours = int(existing_it_hours[0] or 0)
+        
+        if existing_it_hours + hours > 24:
+            # Получаем список существующих IT записей за день
+            with connect() as con, closing(con.cursor()) as c:
+                existing_reports = c.execute("""
+                    SELECT activity, location, hours 
+                    FROM reports 
+                    WHERE user_id=? AND work_date=? AND (location_grp='it' OR activity_grp='it')
+                    ORDER BY created_at
+                """, (user_id, work_date)).fetchall()
+            
+            # Формируем сообщение об ошибке
+            max_can_add = 24 - existing_it_hours
+            error_parts = [
+                f"❌ *Превышен лимит часов!*\n",
+                f"Можно добавить не более *{max_can_add}* ч.\n",
+                f"Уже записано: *{existing_it_hours}* ч из 24\n"
+            ]
+            
+            if existing_reports:
+                error_parts.append("\n*Существующие записи за этот день:*")
+                for act, loc, h in existing_reports:
+                    error_parts.append(f"• {act} ({loc}): *{h}* ч")
+            
+            error_parts.append(f"\n\nТекущая запись:")
+            error_parts.append(f"• Automatization of accounting (manhattan): *{hours}* ч")
+            error_parts.append(f"\nИтого будет: *{existing_it_hours + hours}* ч (максимум 24)")
+            
+            client.send_message(to=user_id, text="\n".join(error_parts))
+            return
+        
         temp_report = {
             "location": "manhattan",
             "loc_grp": "it",  # Специальная группа для IT
@@ -2625,16 +2764,66 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
         return
 
     if current_state == "waiting_hours":
+        # Обработка кнопки "Назад" (0)
+        if message_text == "0":
+            if go_back(client, user_id):
+                return
+            else:
+                # Fallback: возврат к выбору локации
+                state = get_state(user_id)
+                work_data = state["data"].get("work", {})
+                activity_name = work_data.get("activity", "работа")
+                buttons = [
+                    Button(title="Поля", callback_data="work:locgrp:fields"),
+                    Button(title="Склад", callback_data="work:locgrp:ware"),
+                    Button(title="🔙 Назад", callback_data="back:prev"),
+                ]
+                client.send_message(to=user_id, text=f"✅ Выбрано: *{activity_name}*\n\nТеперь выберите *локацию*:", buttons=buttons)
+                return
+        
         if not message_text.isdigit():
-            client.send_message(to=user_id, text="❌ Введите число (1-24).")
+            client.send_message(to=user_id, text="❌ Введите число (1-24) или 0 для возврата назад.")
             return
         
         hours = int(message_text)
         if not (1 <= hours <= 24):
-            client.send_message(to=user_id, text="❌ Часы должны быть от 1 до 24.")
+            client.send_message(to=user_id, text="❌ Часы должны быть от 1 до 24 (или 0 для возврата назад).")
             return
             
         work_data = state["data"].get("work", {})
+        work_date = work_data.get("date")
+        
+        # Проверка суммы часов за день
+        existing_hours = sum_hours_for_user_date(user_id, work_date)
+        if existing_hours + hours > 24:
+            # Получаем список существующих записей за день
+            with connect() as con, closing(con.cursor()) as c:
+                existing_reports = c.execute("""
+                    SELECT activity, location, hours 
+                    FROM reports 
+                    WHERE user_id=? AND work_date=? AND location_grp != 'it' AND activity_grp != 'it'
+                    ORDER BY created_at
+                """, (user_id, work_date)).fetchall()
+            
+            # Формируем сообщение об ошибке
+            max_can_add = 24 - existing_hours
+            error_parts = [
+                f"❌ *Превышен лимит часов!*\n",
+                f"Можно добавить не более *{max_can_add}* ч.\n",
+                f"Уже записано: *{existing_hours}* ч из 24\n"
+            ]
+            
+            if existing_reports:
+                error_parts.append("\n*Существующие записи за этот день:*")
+                for act, loc, h in existing_reports:
+                    error_parts.append(f"• {act} ({loc}): *{h}* ч")
+            
+            error_parts.append(f"\n\nТекущая запись:")
+            error_parts.append(f"• {work_data.get('activity', 'работа')} ({work_data.get('location', 'место')}): *{hours}* ч")
+            error_parts.append(f"\nИтого будет: *{existing_hours + hours}* ч (максимум 24)")
+            
+            client.send_message(to=user_id, text="\n".join(error_parts))
+            return
         
         # Prepare temp report for confirmation
         temp_report = {
@@ -2642,12 +2831,12 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
             "loc_grp": work_data.get("loc_grp"),
             "activity": work_data.get("activity"),
             "act_grp": work_data.get("grp"),
-            "work_date": work_data.get("date"),
+            "work_date": work_date,
             "hours": hours
         }
         
         state["data"]["temp_report"] = temp_report
-        set_state(user_id, "waiting_confirmation_worker", state["data"])
+        set_state(user_id, "waiting_confirmation_worker", state["data"], save_to_history=False)
         
         d_str = date.fromisoformat(temp_report["work_date"]).strftime("%d.%m.%Y")
         
@@ -3213,6 +3402,75 @@ def webhook():
 
     wa.process_webhook(data)
     return "OK", 200
+
+@app.route("/github-webhook", methods=["POST"])
+def github_webhook():
+    """
+    Endpoint для автоматического обновления бота через GitHub webhook.
+    GitHub отправляет POST запрос при push в репозиторий.
+    """
+    if not GITHUB_WEBHOOK_SECRET:
+        logging.warning("⚠️ GitHub webhook вызван, но секрет не настроен")
+        return "Webhook not configured", 503
+    
+    # Проверка секрета (если настроен в GitHub)
+    signature = request.headers.get("X-Hub-Signature-256", "")
+    if signature:
+        import hmac
+        import hashlib
+        payload = request.get_data()
+        expected_signature = "sha256=" + hmac.new(
+            GITHUB_WEBHOOK_SECRET.encode(),
+            payload,
+            hashlib.sha256
+        ).hexdigest()
+        if not hmac.compare_digest(signature, expected_signature):
+            logging.warning("❌ Неверная подпись GitHub webhook")
+            return "Invalid signature", 403
+    
+    # Проверка события
+    event = request.headers.get("X-GitHub-Event", "")
+    if event != "push":
+        logging.info(f"ℹ️ GitHub webhook: событие {event} проигнорировано")
+        return "Event ignored", 200
+    
+    data = request.json
+    if not data:
+        return "Empty payload", 400
+    
+    # Проверка, что это push в main ветку
+    ref = data.get("ref", "")
+    if ref != "refs/heads/main":
+        logging.info(f"ℹ️ GitHub webhook: push в {ref} проигнорирован (ожидается main)")
+        return "Branch ignored", 200
+    
+    logging.info("🔄 Получен GitHub webhook для обновления бота")
+    
+    # Запуск скрипта обновления в фоне
+    import subprocess
+    import threading
+    
+    def run_update():
+        try:
+            script_path = "/root/bot/update_bot.sh"
+            result = subprocess.run(
+                ["bash", script_path],
+                capture_output=True,
+                text=True,
+                timeout=300
+            )
+            if result.returncode == 0:
+                logging.info("✅ Бот успешно обновлен и перезапущен")
+            else:
+                logging.error(f"❌ Ошибка обновления: {result.stderr}")
+        except Exception as e:
+            logging.error(f"❌ Ошибка выполнения скрипта обновления: {e}")
+    
+    # Запускаем обновление в отдельном потоке, чтобы не блокировать ответ
+    thread = threading.Thread(target=run_update, daemon=True)
+    thread.start()
+    
+    return jsonify({"status": "update_started"}), 200
 
 if __name__ == "__main__":
     init_db()
