@@ -97,6 +97,9 @@ def _parse_admin_ids(s: str) -> List[str]:
 ADMIN_IDS = set(_parse_admin_ids(os.getenv("ADMIN_IDS", "")))
 logging.info(f"🔧 ADMIN_IDS loaded: {ADMIN_IDS}")
 
+IT_IDS = set(_parse_admin_ids(os.getenv("IT_IDS", "")))
+logging.info(f"🔧 IT_IDS loaded: {IT_IDS}")
+
 DB_PATH = os.path.join(os.getcwd(), "reports_whatsapp.db")
 
 # Google Sheets настройки
@@ -144,6 +147,7 @@ WELCOME_MESSAGE = "Добро пожаловать! Этот бот поможе
 # -----------------------------
 
 user_states: Dict[str, dict] = {}
+user_history: Dict[str, list] = {}  # История состояний для возврата назад
 processed_messages: set = set()
 
 def is_message_processed(msg_id: str) -> bool:
@@ -160,14 +164,106 @@ def get_state(user_id: str) -> dict:
         user_states[user_id] = {"state": None, "data": {}}
     return user_states[user_id]
 
-def set_state(user_id: str, state: Optional[str], data: dict = None):
+def save_to_history(user_id: str, back_callback: str):
+    """
+    Сохранить текущее состояние в историю с указанием callback для возврата назад.
+    
+    Args:
+        user_id: ID пользователя
+        back_callback: callback_data для возврата назад (например, "menu:root", "menu:work")
+    """
+    global _restoring_state
+    
+    # Не сохраняем историю при восстановлении состояния
+    if _restoring_state:
+        return
+    
     s = get_state(user_id)
+    if s["state"] is not None:
+        if user_id not in user_history:
+            user_history[user_id] = []
+        # Сохраняем копию текущего состояния и callback для возврата
+        user_history[user_id].append({
+            "state": s["state"],
+            "data": s["data"].copy() if s["data"] else {},
+            "back_callback": back_callback
+        })
+        # Ограничиваем размер истории (последние 10 состояний)
+        if len(user_history[user_id]) > 10:
+            user_history[user_id] = user_history[user_id][-10:]
+
+def set_state(user_id: str, state: Optional[str], data: dict = None, save_to_history: bool = True, back_callback: Optional[str] = None):
+    """
+    Установить состояние пользователя.
+    
+    Args:
+        user_id: ID пользователя
+        state: Название состояния
+        data: Данные состояния
+        save_to_history: Сохранять ли текущее состояние в историю перед переходом
+        back_callback: callback_data для возврата назад (если save_to_history=True)
+    """
+    s = get_state(user_id)
+    
+    # Сохраняем текущее состояние в историю перед переходом (если это не очистка)
+    if save_to_history and s["state"] is not None and state is not None and back_callback:
+        save_to_history(user_id, back_callback)
+    
     s["state"] = state
     if data is not None:
         s["data"] = data
 
 def clear_state(user_id: str):
     user_states[user_id] = {"state": None, "data": {}}
+    # Очищаем историю при полной очистке состояния
+    if user_id in user_history:
+        user_history[user_id] = []
+
+# Флаг для предотвращения сохранения истории при восстановлении состояния
+_restoring_state = False
+
+def go_back(client, user_id: str) -> bool:
+    """
+    Вернуться на один шаг назад в истории состояний.
+    Восстанавливает предыдущее состояние и вызывает соответствующий callback.
+    
+    Returns:
+        True если удалось вернуться назад, False если истории нет
+    """
+    global _restoring_state
+    
+    if user_id not in user_history or not user_history[user_id]:
+        return False
+    
+    # Восстанавливаем предыдущее состояние
+    prev_state = user_history[user_id].pop()
+    user_states[user_id] = {
+        "state": prev_state["state"],
+        "data": prev_state["data"].copy() if prev_state["data"] else {}
+    }
+    
+    # Вызываем callback для восстановления экрана
+    back_callback = prev_state.get("back_callback")
+    if back_callback:
+        # Устанавливаем флаг, чтобы не сохранять историю при восстановлении
+        _restoring_state = True
+        try:
+            # Создаем временный объект callback для вызова обработчика
+            class TempCallback:
+                def __init__(self, user_id, data):
+                    class TempUser:
+                        def __init__(self, uid):
+                            self.wa_id = uid
+                    self.from_user = TempUser(user_id)
+                    self.data = data
+            
+            temp_btn = TempCallback(user_id, back_callback)
+            handle_callback(client, temp_btn)
+        finally:
+            _restoring_state = False
+        return True
+    
+    return False
 
 # -----------------------------
 # БД (те же функции, что в Telegram версии)
@@ -516,12 +612,17 @@ def fetch_stats_range_for_user(user_id:str, start_date:str, end_date:str) -> Lis
         SELECT work_date, location, activity, hours
         FROM reports
         WHERE user_id=? AND work_date>=? AND work_date<=?
+        AND location_grp != 'it' AND activity_grp != 'it'
         ORDER BY work_date DESC, created_at DESC
         """, (user_id, start_date, end_date)).fetchall()
         return rows
 
 def is_admin(user_id: str) -> bool:
     return user_id in ADMIN_IDS
+
+def is_it(user_id: str) -> bool:
+    """Проверка, является ли пользователь IT"""
+    return user_id in IT_IDS
 
 # Brigadier функции
 def is_brigadier(user_id: str) -> bool:
@@ -744,44 +845,66 @@ def log_request():
 def show_main_menu(wa: WhatsApp360Client, user_id: str, u: dict):
     name = (u or {}).get("full_name") or "—"
     
-    # Проверяем, является ли пользователь бригадиром
+    # Проверяем роль пользователя
+    it_user = is_it(user_id)
     brigadier = is_brigadier(user_id)
     
-    if brigadier:
+    if it_user:
+        # Для IT роли: приветствие mc.Lover (имя) и только кнопки star и статистика
+        text = f"mc.Lover (*{name}*)\n\nВыберите действие: 🌻"
+        buttons = [
+            Button(title="⭐", callback_data="it:star"),
+            Button(title="📊 Статистика", callback_data="menu:stats"),
+        ]
+    elif brigadier:
         buttons = [
             Button(title="👷 Работа (Бригадир)", callback_data="menu:brigadier"),
             Button(title="📊 Статистика", callback_data="menu:stats"),
             Button(title="Ещё...", callback_data="menu:more"),
         ]
+        text = f"👤 *{name}*\n\nВыберите действие: 🌻"
     else:
         buttons = [
             Button(title="🚜 ОТД", callback_data="menu:work"),
             Button(title="📊 Статистика", callback_data="menu:stats"),
             Button(title="Ещё...", callback_data="menu:more"),
         ]
-    text = f"👤 *{name}*\n\nВыберите действие: 🌻"
+        text = f"👤 *{name}*\n\nВыберите действие: 🌻"
     
     # Для админов добавляем подсказку по скрытым командам
-    if is_admin(user_id):
+    if is_admin(user_id) and not it_user:
         text += "\n\n🛠 *Команды админа:*\n`/бриг` - Управление бригадирами\n`00` - В главное меню"
         
     wa.send_message(to=user_id, text=text, buttons=buttons)
 
 def show_more_menu(wa: WhatsApp360Client, user_id: str):
+    it_user = is_it(user_id)
     admin = is_admin(user_id)
     buttons = []
     
-    if admin:
+    if it_user:
+        # Для IT роли: команды admin, briq, rname, sts
+        text = (
+            "1. *admin* - выдает админское меню (и имею полностью как обычно меню работяги с ОТД и т.д., только с кнопкой админ)\n"
+            "2. *briq* - выдает бригадирское меню\n"
+            "3. *rname* - сменить имя\n"
+            "4. *sts* - статистика"
+        )
+        buttons.append(Button(title="🔙 Назад", callback_data="back:prev"))
+    elif admin:
         # Для админа: Админ, Имя, Назад
         buttons.append(Button(title="⚙️ Админ", callback_data="menu:admin"))
         buttons.append(Button(title="✏️ Имя", callback_data="menu:name"))
+        buttons.append(Button(title="🔙 Назад", callback_data="back:prev"))
+        text = "Выберите действие:"
     else:
         # Для обычного юзера: Перепись, Имя, Назад
         buttons.append(Button(title="📝 Перепись", callback_data="menu:edit"))
         buttons.append(Button(title="✏️ Имя", callback_data="menu:name"))
-    buttons.append(Button(title="🔙 Назад", callback_data="menu:root"))
+        buttons.append(Button(title="🔙 Назад", callback_data="back:prev"))
+        text = "Выберите действие:"
     
-    wa.send_message(to=user_id, text="Выберите действие:", buttons=buttons)
+    wa.send_message(to=user_id, text=text, buttons=buttons)
 
 def show_brigadier_menu(wa: WhatsApp360Client, user_id: str, selected_date: str):
     """
@@ -802,7 +925,7 @@ def show_brigadier_stats_menu(wa: WhatsApp360Client, user_id: str):
     buttons = [
         Button(title="Сегодня", callback_data="brig:stats:today"),
         Button(title="Неделя", callback_data="brig:stats:week"),
-        Button(title="🔙 Назад", callback_data="menu:brigadier"),
+        Button(title="🔙 Назад", callback_data="back:prev"),
     ]
     wa.send_message(to=user_id, text="📊 Выберите период статистики:", buttons=buttons)
 
@@ -1019,18 +1142,43 @@ def handle_callback(client, btn: CallbackObject):
     user_id = btn.from_user.wa_id
     data = btn.data
     
+    # Обработка кнопки "Назад" - возврат на один шаг назад
+    if data == "back:prev":
+        if go_back(client, user_id):
+            return
+        else:
+            # Если истории нет, возвращаемся в главное меню
+            u = get_user(user_id)
+            clear_state(user_id)
+            show_main_menu(client, user_id, u)
+            return
+    
+    # Обработка команды star для IT роли
+    if data == "it:star":
+        if not is_it(user_id):
+            client.send_message(to=user_id, text="❌ Нет прав")
+            return
+        # Запрашиваем количество часов
+        set_state(user_id, "it_waiting_hours", {}, save_to_history=False)
+        client.send_message(to=user_id, text="Введите *количество часов*:")
+        return
+    
     if data == "menu:root":
         u = get_user(user_id)
         clear_state(user_id)
         show_main_menu(client, user_id, u)
     
     elif data == "menu:more":
+        # Сохраняем текущее состояние в историю перед переходом
+        save_to_history(user_id, "menu:root")
         show_more_menu(client, user_id)
     
     elif data == "menu:work":
+        # Сохраняем текущее состояние в историю перед переходом
+        save_to_history(user_id, "menu:root")
         u = get_user(user_id)
         if not u or not (u.get("full_name") or "").strip():
-            set_state(user_id, "waiting_name")
+            set_state(user_id, "waiting_name", save_to_history=False)
             client.send_message(to=user_id, text="Введите *Фамилию Имя* для регистрации.")
             return
         
@@ -1038,12 +1186,14 @@ def handle_callback(client, btn: CallbackObject):
         show_date_selection(client, user_id, prefix="work:date")
     
     elif data == "menu:stats":
+        # Сохраняем текущее состояние в историю перед переходом
+        save_to_history(user_id, "menu:root")
         # 1. Admin Logic
         if is_admin(user_id):
             buttons = [
                 Button(title="🚜 Terra (Все)", callback_data="stats:admin:terra"),
                 Button(title="👷 Бригадиры (Все)", callback_data="stats:admin:brig"),
-                Button(title="🔙 Назад", callback_data="menu:root"),
+                Button(title="🔙 Назад", callback_data="back:prev"),
             ]
             client.send_message(to=user_id, text="📊 *Статистика администратора*\n\nВыберите категорию:", buttons=buttons)
             return
@@ -1097,7 +1247,7 @@ def handle_callback(client, btn: CallbackObject):
             buttons = [
                 Button(title="✏️ Изменить", callback_data="menu:edit_list"),
                 Button(title="🗑 Удалить", callback_data="menu:delete_list"),
-                Button(title="🔙 Назад", callback_data="menu:root"),
+                Button(title="🔙 Назад", callback_data="back:prev"),
             ]
             client.send_message(to=user_id, text=text, buttons=buttons)
             return
@@ -1132,7 +1282,7 @@ def handle_callback(client, btn: CallbackObject):
         buttons = [
             Button(title="✏️ Изменить", callback_data="menu:edit_list"),
             Button(title="🗑 Удалить", callback_data="menu:delete_list"),
-            Button(title="🔙 Назад", callback_data="menu:root"),
+            Button(title="🔙 Назад", callback_data="back:prev"),
         ]
         
         client.send_message(to=user_id, text=text, buttons=buttons)
@@ -1146,7 +1296,7 @@ def handle_callback(client, btn: CallbackObject):
             rows = c.execute("""
                 SELECT work_date, COUNT(DISTINCT user_id), SUM(hours)
                 FROM reports
-                WHERE work_date >= ?
+                WHERE work_date >= ? AND location_grp != 'it' AND activity_grp != 'it'
                 GROUP BY work_date
                 ORDER BY work_date DESC
             """, (start_date,)).fetchall()
@@ -1308,6 +1458,8 @@ def handle_callback(client, btn: CallbackObject):
             client.send_message(to=user_id, text="❌ Нет прав")
             return
         
+        # Сохраняем текущее состояние в историю перед переходом
+        save_to_history(user_id, "menu:more")
         buttons = [
             Button(title="➕➖ Работы", callback_data="adm:menu:activities"),
             Button(title="➕➖ Локации", callback_data="adm:menu:locations"),
@@ -1321,10 +1473,12 @@ def handle_callback(client, btn: CallbackObject):
         if not is_admin(user_id):
             client.send_message(to=user_id, text="❌ Нет прав")
             return
+        # Сохраняем текущее состояние в историю перед переходом
+        save_to_history(user_id, "menu:admin")
         buttons = [
             Button(title="➕ Добавить работу", callback_data="adm:add:act"),
             Button(title="➖ Удалить работу", callback_data="adm:del:act"),
-            Button(title="🔙 Админ", callback_data="menu:admin"),
+            Button(title="🔙 Назад", callback_data="back:prev"),
         ]
         client.send_message(to=user_id, text="⚙️ *Управление работами*:", buttons=buttons)
     
@@ -1332,10 +1486,12 @@ def handle_callback(client, btn: CallbackObject):
         if not is_admin(user_id):
             client.send_message(to=user_id, text="❌ Нет прав")
             return
+        # Сохраняем текущее состояние в историю перед переходом
+        save_to_history(user_id, "menu:admin")
         buttons = [
             Button(title="➕ Добавить локацию", callback_data="adm:add:loc"),
             Button(title="➖ Удалить локацию", callback_data="adm:del:loc"),
-            Button(title="🔙 Админ", callback_data="menu:admin"),
+            Button(title="🔙 Назад", callback_data="back:prev"),
         ]
         client.send_message(to=user_id, text="⚙️ *Управление локациями*:", buttons=buttons)
     
@@ -1353,7 +1509,7 @@ def handle_callback(client, btn: CallbackObject):
         buttons = [
             Button(title="Техника", callback_data="work:grp:tech"),
             Button(title="Ручная", callback_data="work:grp:hand"),
-            Button(title="🔙 Назад", callback_data="menu:root"),
+            Button(title="🔙 Назад", callback_data="back:prev"),
         ]
         client.send_message(to=user_id, text="Выберите *тип работы*:", buttons=buttons)
         clear_state(user_id)
@@ -1368,7 +1524,7 @@ def handle_callback(client, btn: CallbackObject):
         buttons = [
             Button(title="Поля", callback_data="work:locgrp:fields"),
             Button(title="Склад", callback_data="work:locgrp:ware"),
-            Button(title="🔙 Назад", callback_data="menu:work"),
+            Button(title="🔙 Назад", callback_data="back:prev"),
         ]
         client.send_message(to=user_id, text=f"✅ Выбрано: *{activity_name}*\n\nТеперь выберите *локацию*:", buttons=buttons)
         return
@@ -1378,12 +1534,14 @@ def handle_callback(client, btn: CallbackObject):
         # Но оставим этот handler на случай, если мы решим использовать кнопки в будущем
         # или если вызов идет из другого места.
         selected_date = data.split(":")[2]
-        set_state(user_id, "pick_work_group", {"date": selected_date})
+        # Сохраняем текущее состояние в историю перед переходом
+        save_to_history(user_id, "menu:work")
+        set_state(user_id, "pick_work_group", {"date": selected_date}, save_to_history=False)
         
         buttons = [
             Button(title="Техника", callback_data="work:grp:tech"),
             Button(title="Ручная", callback_data="work:grp:hand"),
-            Button(title="🔙 Назад", callback_data="menu:root"),
+            Button(title="🔙 Назад", callback_data="back:prev"),
         ]
         d_str = date.fromisoformat(selected_date).strftime("%d.%m.%Y")
         client.send_message(to=user_id, text=f"📅 Дата: *{d_str}*\n\nВыберите *тип работы*:", buttons=buttons)
@@ -1392,10 +1550,17 @@ def handle_callback(client, btn: CallbackObject):
         kind = data.split(":")[2]
         grp_name = GROUP_TECH if kind == "tech" else GROUP_HAND
         
-        # Preserve the date from the previous state
+        # Сохраняем текущее состояние в историю перед переходом
+        # Определяем callback для возврата - это экран выбора типа работы после выбора даты
         state = get_state(user_id)
         work_date = state["data"].get("date")
+        if work_date:
+            # Сохраняем с callback, который вернет к выбору типа работы
+            save_to_history(user_id, f"work:date:{work_date}")
+        else:
+            save_to_history(user_id, "menu:work")
         
+        # Preserve the date from the previous state
         # If date is missing (should not happen in new flow), default to today
         if not work_date:
             work_date = date.today().isoformat()
@@ -1406,7 +1571,7 @@ def handle_callback(client, btn: CallbackObject):
         state["data"]["acts"] = activities
         state["data"]["acts_kind"] = kind
         
-        set_state(user_id, "waiting_activity_selection", state["data"])
+        set_state(user_id, "waiting_activity_selection", state["data"], save_to_history=False)
         
         if not activities:
             client.send_message(to=user_id, text="❌ В этой категории нет работ.")
@@ -1428,12 +1593,17 @@ def handle_callback(client, btn: CallbackObject):
         work_data = state["data"].get("work", {})
         work_data["loc_grp"] = grp
         
+        # Сохраняем текущее состояние в историю перед переходом
+        # Определяем callback для возврата - это экран выбора работы
+        acts_kind = state["data"].get("acts_kind", "tech")
+        save_to_history(user_id, f"work:grp:{acts_kind}")
+        
         if lg == "ware":
             work_data["location"] = "Склад"
             state["data"]["work"] = work_data
             
             # Skip date selection (already done), go to hours
-            set_state(user_id, "waiting_hours", state["data"])
+            set_state(user_id, "waiting_hours", state["data"], save_to_history=False)
             client.send_message(to=user_id, text="Введите *количество часов*:")
             
         else:
@@ -1443,7 +1613,7 @@ def handle_callback(client, btn: CallbackObject):
             state["data"]["locs"] = locations
             state["data"]["locs_group"] = lg
             
-            set_state(user_id, "waiting_location_selection", state["data"])
+            set_state(user_id, "waiting_location_selection", state["data"], save_to_history=False)
             
             if not locations:
                 client.send_message(to=user_id, text="❌ Локаций нет.")
@@ -1457,6 +1627,55 @@ def handle_callback(client, btn: CallbackObject):
             quick_replies = [{"id": "cancel_location", "title": "🔙 Back"}]
             client.send_text_with_quick_replies(to=user_id, text=text, quick_replies=quick_replies)
     
+    elif data == "confirm:it":
+        if not is_it(user_id):
+            client.send_message(to=user_id, text="❌ Нет прав")
+            return
+        
+        state = get_state(user_id)
+        temp_report = state["data"].get("temp_report")
+        if not temp_report:
+            client.send_message(to=user_id, text="❌ Данные устарели. Начните заново.")
+            return
+
+        # Save IT report (не в общую группу)
+        u = get_user(user_id)
+        reg_name = u.get("full_name") if u else user_id
+        
+        report_id = insert_report(
+            user_id=user_id,
+            reg_name=reg_name,
+            location=temp_report.get("location"),
+            loc_grp=temp_report.get("loc_grp"),  # "it" - специальная группа
+            activity=temp_report.get("activity"),
+            act_grp=temp_report.get("act_grp"),  # "it" - специальная группа
+            work_date=temp_report.get("work_date"),
+            hours=temp_report.get("hours")
+        )
+        
+        d_str = date.fromisoformat(temp_report.get("work_date")).strftime("%d.%m.%Y")
+        
+        text = (
+            f"✅ *Отчет сохранен*\n\n"
+            f"📅 Дата: *{d_str}*\n"
+            f"Работа: *{temp_report.get('activity')}*\n"
+            f"Место: *{temp_report.get('location')}*\n"
+            f"Часы: *{temp_report.get('hours')}*\n"
+            f"ID: `#{report_id}`"
+        )
+        
+        clear_state(user_id)
+        client.send_message(to=user_id, text=text)
+        show_main_menu(client, user_id, u)
+    
+    elif data == "edit:it":
+        if not is_it(user_id):
+            client.send_message(to=user_id, text="❌ Нет прав")
+            return
+        # Возвращаемся к вводу часов
+        set_state(user_id, "it_waiting_hours", {}, save_to_history=False)
+        client.send_message(to=user_id, text="Введите *количество часов*:")
+
     elif data == "confirm:worker":
         state = get_state(user_id)
         temp_report = state["data"].get("temp_report")
@@ -1590,7 +1809,7 @@ def handle_callback(client, btn: CallbackObject):
         buttons = [
             Button(title="🚜 Техника", callback_data="adm:add:act:tech"),
             Button(title="✋ Ручная", callback_data="adm:add:act:hand"),
-            Button(title="🔙 Назад", callback_data="adm:menu:activities"),
+            Button(title="🔙 Назад", callback_data="back:prev"),
         ]
         client.send_message(to=user_id, text="Выберите *группу работы*:", buttons=buttons)
 
@@ -1601,7 +1820,7 @@ def handle_callback(client, btn: CallbackObject):
         buttons = [
             Button(title="🚜 Техника", callback_data="adm:del:act:tech"),
             Button(title="✋ Ручная", callback_data="adm:del:act:hand"),
-            Button(title="🔙 Назад", callback_data="adm:menu:activities"),
+            Button(title="🔙 Назад", callback_data="back:prev"),
         ]
         client.send_message(to=user_id, text="Выберите *группу работы*:", buttons=buttons)
 
@@ -1787,7 +2006,7 @@ def handle_callback(client, btn: CallbackObject):
         buttons = [
             Button(title="➕ Добавить", callback_data="adm:add:loc"),
             Button(title="➖ Удалить", callback_data="adm:del:loc"),
-            Button(title="🔙 Назад", callback_data="menu:admin"),
+            Button(title="🔙 Назад", callback_data="back:prev"),
         ]
         client.send_message(to=user_id, text="⚙️ *Управление локациями*:", buttons=buttons)
 
@@ -1807,7 +2026,7 @@ def handle_callback(client, btn: CallbackObject):
         buttons = [
             Button(title="➕ Добавить", callback_data="adm:add:act"),
             Button(title="➖ Удалить", callback_data="adm:del:act"),
-            Button(title="🔙 Назад", callback_data="menu:admin"),
+            Button(title="🔙 Назад", callback_data="back:prev"),
         ]
         client.send_message(to=user_id, text="⚙️ *Управление работами*:", buttons=buttons)
     
@@ -1850,12 +2069,16 @@ def handle_callback(client, btn: CallbackObject):
         if not is_brigadier(user_id):
             client.send_message(to=user_id, text="❌ У вас нет прав бригадира")
             return
+        # Сохраняем текущее состояние в историю перед переходом
+        save_to_history(user_id, "menu:root")
         show_date_selection(client, user_id, prefix="brig:date")
     
     elif data.startswith("brig:date:"):
         # Дата выбрана (через callback, если бы мы использовали кнопки)
         selected_date = data.split(":")[2]
-        set_state(user_id, "brig_menu_selected", {"date": selected_date})
+        # Сохраняем текущее состояние в историю перед переходом
+        save_to_history(user_id, "menu:brigadier")
+        set_state(user_id, "brig_menu_selected", {"date": selected_date}, save_to_history=False)
         show_brigadier_menu(client, user_id, selected_date)
     
     elif data == "brig:stats":
@@ -1902,6 +2125,8 @@ def handle_callback(client, btn: CallbackObject):
         if not is_admin(user_id):
             client.send_message(to=user_id, text="❌ Нет прав")
             return
+        # Сохраняем текущее состояние в историю перед переходом
+        save_to_history(user_id, "menu:admin")
         buttons = [
             Button(title="➕ Добавить бригадира", callback_data="adm:add:brigadier"),
             Button(title="➖ Удалить бригадира", callback_data="adm:del:brigadier"),
@@ -2017,6 +2242,38 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
         client.send_message(to=user_id, text="🔄 Сброс в главное меню")
         show_main_menu(client, user_id, u)
         return
+
+    # Команды для IT роли
+    if is_it(user_id):
+        if norm_text == "admin":
+            # Сохраняем текущее состояние в историю перед переходом
+            save_to_history(user_id, "menu:more")
+            # Показываем админское меню, но с полным функционалом работяги
+            buttons = [
+                Button(title="🚜 ОТД", callback_data="menu:work"),
+                Button(title="📊 Статистика", callback_data="menu:stats"),
+                Button(title="⚙️ Админ", callback_data="menu:admin"),
+            ]
+            client.send_message(to=user_id, text="⚙️ *Админ-меню*\n\nВыберите действие:", buttons=buttons)
+            return
+        elif norm_text == "briq":
+            # Сохраняем текущее состояние в историю перед переходом
+            save_to_history(user_id, "menu:more")
+            # Показываем бригадирское меню
+            show_date_selection(client, user_id, prefix="brig:date")
+            return
+        elif norm_text == "rname":
+            set_state(user_id, "waiting_name", save_to_history=False)
+            client.send_message(to=user_id, text="Введите *Фамилию Имя* для изменения:")
+            return
+        elif norm_text == "sts":
+            # Сохраняем текущее состояние в историю перед переходом
+            save_to_history(user_id, "menu:more")
+            # Показываем статистику
+            data_obj = type('obj', (object,), {'data': 'menu:stats'})()
+            btn_obj = type('obj', (object,), {'from_user': msg.from_user, 'data': 'menu:stats'})()
+            handle_callback(client, btn_obj)
+            return
 
     if norm_text in {"menu", "меню"}:
         cmd_menu(client, msg)
@@ -2147,7 +2404,7 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
             buttons = [
                 Button(title="Техника", callback_data="work:grp:tech"),
                 Button(title="Ручная", callback_data="work:grp:hand"),
-                Button(title="🔙 Назад", callback_data="menu:root"),
+                Button(title="🔙 Назад", callback_data="back:prev"),
             ]
             client.send_message(to=user_id, text="Выберите *тип работы*:", buttons=buttons)
             clear_state(user_id)
@@ -2191,7 +2448,7 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
         buttons = [
             Button(title="Поля", callback_data="work:locgrp:fields"),
             Button(title="Склад", callback_data="work:locgrp:ware"),
-            Button(title="🔙 Назад", callback_data="menu:work"),
+            Button(title="🔙 Назад", callback_data="back:prev"),
         ]
         client.send_message(to=user_id, text=f"✅ Выбрано: *{activity_name}*\n\nТеперь выберите *локацию*:", buttons=buttons)
         return
@@ -2237,7 +2494,7 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
         buttons = [
             Button(title="Поля", callback_data="work:locgrp:fields"),
             Button(title="Склад", callback_data="work:locgrp:ware"),
-            Button(title="🔙 Назад", callback_data="menu:work"),
+            Button(title="🔙 Назад", callback_data="back:prev"),
         ]
         client.send_message(to=user_id, text=f"✅ Выбрано: *{custom_activity}*\n\nТеперь выберите *локацию*:", buttons=buttons)
         return
@@ -2247,7 +2504,7 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
             buttons = [
                 Button(title="Поля", callback_data="work:locgrp:fields"),
                 Button(title="Склад", callback_data="work:locgrp:ware"),
-                Button(title="🔙 Назад", callback_data="menu:work"),
+                Button(title="🔙 Назад", callback_data="back:prev"),
             ]
             client.send_message(to=user_id, text="Выберите *локацию*:", buttons=buttons)
             return
@@ -2306,7 +2563,7 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
             buttons = [
                 Button(title="Техника", callback_data="work:grp:tech"),
                 Button(title="Ручная", callback_data="work:grp:hand"),
-                Button(title="🔙 Назад", callback_data="menu:root"),
+                Button(title="🔙 Назад", callback_data="back:prev"),
             ]
             d_str = date.fromisoformat(selected_date).strftime("%d.%m.%Y")
             client.send_message(to=user_id, text=f"📅 Дата: *{d_str}*\n\nВыберите *тип работы*:", buttons=buttons)
@@ -2316,6 +2573,55 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
             set_state(user_id, "brig_menu_selected", {"date": selected_date})
             show_brigadier_menu(client, user_id, selected_date)
             
+        return
+
+    # Обработка состояния для IT роли - ввод часов для star
+    if current_state == "it_waiting_hours":
+        if not is_it(user_id):
+            client.send_message(to=user_id, text="❌ Нет прав")
+            clear_state(user_id)
+            return
+        
+        if not message_text.isdigit():
+            client.send_message(to=user_id, text="❌ Введите число (1-24).")
+            return
+        
+        hours = int(message_text)
+        if not (1 <= hours <= 24):
+            client.send_message(to=user_id, text="❌ Часы должны быть от 1 до 24.")
+            return
+        
+        # Автоматически заполняем данные для IT отчета
+        work_date = date.today().isoformat()
+        temp_report = {
+            "location": "manhattan",
+            "loc_grp": "it",  # Специальная группа для IT
+            "activity": "Automatization of accounting",
+            "act_grp": "it",  # Специальная группа для IT
+            "work_date": work_date,
+            "hours": hours
+        }
+        
+        # Сохраняем временный отчет в состояние
+        state["data"]["temp_report"] = temp_report
+        set_state(user_id, "waiting_confirmation_it", state["data"], save_to_history=False)
+        
+        # Показываем подтверждение (такое же как у всех)
+        d_str = date.fromisoformat(work_date).strftime("%d.%m.%Y")
+        text = (
+            f"📋 *Подтверждение отчета*\n\n"
+            f"📅 Дата: *{d_str}*\n"
+            f"Работа: *{temp_report['activity']}*\n"
+            f"Место: *{temp_report['location']}*\n"
+            f"Часы: *{hours}*\n\n"
+            f"Всё верно?"
+        )
+        
+        buttons = [
+            Button(title="✅ Подтвердить", callback_data="confirm:it"),
+            Button(title="✏️ Изменить", callback_data="edit:it"),
+        ]
+        client.send_message(to=user_id, text=text, buttons=buttons)
         return
 
     if current_state == "waiting_hours":
@@ -2556,7 +2862,7 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
             buttons = [
                 Button(title="🚜 Техника", callback_data="adm:del:act:tech"),
                 Button(title="✋ Ручная", callback_data="adm:del:act:hand"),
-                Button(title="🔙 Назад", callback_data="adm:menu:activities"),
+                Button(title="🔙 Назад", callback_data="back:prev"),
             ]
             client.send_message(to=user_id, text="Выберите *группу работы*:", buttons=buttons)
             clear_state(user_id)
@@ -2593,7 +2899,7 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
             buttons = [
                 Button(title="➕ Добавить локацию", callback_data="adm:add:loc"),
                 Button(title="➖ Удалить локацию", callback_data="adm:del:loc"),
-                Button(title="🔙 Админ", callback_data="menu:admin"),
+                Button(title="🔙 Назад", callback_data="back:prev"),
             ]
             client.send_message(to=user_id, text="⚙️ *Управление локациями*:", buttons=buttons)
             clear_state(user_id)
