@@ -137,6 +137,8 @@ GROUP_HAND = "ручная"
 GROUP_FIELDS = "поля"
 GROUP_WARE = "склад"
 
+WELCOME_MESSAGE = "Добро пожаловать! Этот бот поможет вам отправлять отчеты."
+
 # -----------------------------
 # Хранилище состояний пользователей (в памяти)
 # -----------------------------
@@ -268,6 +270,15 @@ def init_db():
           workers       INTEGER,
           timestamp     TEXT,
           work_date     TEXT
+        )
+        """)
+        c.execute("""
+        CREATE TABLE IF NOT EXISTS reminder_status(
+          user_id       TEXT,
+          date          TEXT,
+          status        TEXT,
+          last_reminded_at TEXT,
+          PRIMARY KEY (user_id, date)
         )
         """)
 
@@ -560,6 +571,116 @@ def save_brigadier_report(user_id: str, username: str, work_type: str,
         con.commit()
         return c.lastrowid
 
+# -----------------------------
+# Reminder System Functions
+# -----------------------------
+
+def get_reminder_status(user_id: str, date_str: str) -> Optional[dict]:
+    with connect() as con, closing(con.cursor()) as c:
+        r = c.execute(
+            "SELECT status, last_reminded_at FROM reminder_status WHERE user_id=? AND date=?",
+            (user_id, date_str)
+        ).fetchone()
+        if not r:
+            return None
+        return {"status": r[0], "last_reminded_at": r[1]}
+
+def set_reminder_status(user_id: str, date_str: str, status: str, last_reminded_at: str = None):
+    with connect() as con, closing(con.cursor()) as c:
+        if last_reminded_at:
+            c.execute(
+                "INSERT INTO reminder_status(user_id, date, status, last_reminded_at) VALUES(?,?,?,?) "
+                "ON CONFLICT(user_id, date) DO UPDATE SET status=excluded.status, last_reminded_at=excluded.last_reminded_at",
+                (user_id, date_str, status, last_reminded_at)
+            )
+        else:
+             c.execute(
+                "INSERT INTO reminder_status(user_id, date, status) VALUES(?,?,?) "
+                "ON CONFLICT(user_id, date) DO UPDATE SET status=excluded.status",
+                (user_id, date_str, status)
+            )
+        con.commit()
+
+def is_report_filled_today(user_id: str) -> bool:
+    today = date.today().isoformat()
+    with connect() as con, closing(con.cursor()) as c:
+        # Check regular reports
+        r1 = c.execute("SELECT id FROM reports WHERE user_id=? AND work_date=?", (user_id, today)).fetchone()
+        if r1: return True
+        # Check brigadier reports
+        r2 = c.execute("SELECT id FROM brigadier_reports WHERE user_id=? AND work_date=?", (user_id, today)).fetchone()
+        if r2: return True
+    return False
+
+def check_reminders():
+    """
+    Checks if users need to be reminded to fill reports.
+    Runs every minute.
+    """
+    now = datetime.now()
+    today_str = now.date().isoformat()
+    
+    # Logic:
+    # 1. If 14:00 <= now < 19:00: Remind every 49 min if not filled.
+    # 2. If 19:00 <= now < 20:00: Remind once if filled (confirmation).
+    
+    hour = now.hour
+    
+    # Optimization: Only run check within relevant hours
+    if not (14 <= hour < 20):
+        return
+
+    with connect() as con, closing(con.cursor()) as c:
+        # Get all users
+        users = c.execute("SELECT user_id FROM users").fetchall()
+        
+    for (uid,) in users:
+        status_data = get_reminder_status(uid, today_str)
+        status = status_data["status"] if status_data else None
+        
+        if status == "disabled":
+            continue
+            
+        filled = is_report_filled_today(uid)
+        
+        # Condition 1: Not filled, afternoon reminder
+        if 14 <= hour < 19:
+            if not filled:
+                last_reminded = status_data.get("last_reminded_at") if status_data else None
+                should_remind = False
+                
+                if not last_reminded:
+                    should_remind = True
+                else:
+                    last_dt = datetime.fromisoformat(last_reminded)
+                    if (now - last_dt) >= timedelta(minutes=49):
+                        should_remind = True
+                
+                if should_remind:
+                    # Send reminder
+                    buttons = [
+                        Button(title="🚜 Заполнить ОТД", callback_data="menu:work"),
+                        Button(title="😴 Я сегодня не работаю", callback_data="reminder:cancel")
+                    ]
+                    try:
+                        wa.send_message(to=uid, text="🔔 *Не забудьте заполнить ОТД!*", buttons=buttons)
+                        set_reminder_status(uid, today_str, "reminded", now.isoformat())
+                    except Exception as e:
+                        logging.error(f"Failed to send reminder to {uid}: {e}")
+
+        # Condition 2: Filled, evening confirmation (once)
+        elif 19 <= hour < 20:
+            if filled and status != "reminded_19:00":
+                try:
+                    wa.send_message(
+                        to=uid, 
+                        text="✅ Вы уже заполнили отчет сегодня. Все верно? Если нужно добавить еще работы, нажмите кнопку ниже.",
+                        buttons=[Button(title="🚜 Добавить еще", callback_data="menu:work")]
+                    )
+                    set_reminder_status(uid, today_str, "reminded_19:00", now.isoformat())
+                except Exception as e:
+                    logging.error(f"Failed to send 19:00 reminder to {uid}: {e}")
+
 # Google Sheets функции
 try:
     from google_sheets_manager import (
@@ -634,7 +755,7 @@ def show_main_menu(wa: WhatsApp360Client, user_id: str, u: dict):
         ]
     else:
         buttons = [
-            Button(title="🚜 Работа", callback_data="menu:work"),
+            Button(title="🚜 ОТД", callback_data="menu:work"),
             Button(title="📊 Статистика", callback_data="menu:stats"),
             Button(title="Ещё...", callback_data="menu:more"),
         ]
@@ -767,6 +888,11 @@ def cmd_start(client: WhatsApp360Client, msg: MessageObject):
     if not user_id:
         logging.warning("Received message without user_id")
         return
+    
+    # Check if user exists before upserting
+    existing_user = get_user(user_id)
+    if not existing_user:
+        client.send_message(to=user_id, text=WELCOME_MESSAGE)
     
     upsert_user(user_id, None, TZ)
     u = get_user(user_id)
@@ -1331,6 +1457,103 @@ def handle_callback(client, btn: CallbackObject):
             quick_replies = [{"id": "cancel_location", "title": "🔙 Back"}]
             client.send_text_with_quick_replies(to=user_id, text=text, quick_replies=quick_replies)
     
+    elif data == "confirm:worker":
+        state = get_state(user_id)
+        temp_report = state["data"].get("temp_report")
+        if not temp_report:
+            client.send_message(to=user_id, text="❌ Данные устарели. Начните заново.")
+            return
+
+        # Save report
+        u = get_user(user_id)
+        reg_name = u.get("full_name") if u else user_id
+        
+        report_id = insert_report(
+            user_id=user_id,
+            reg_name=reg_name,
+            location=temp_report.get("location"),
+            loc_grp=temp_report.get("loc_grp"),
+            activity=temp_report.get("activity"),
+            act_grp=temp_report.get("act_grp"),
+            work_date=temp_report.get("work_date"),
+            hours=temp_report.get("hours")
+        )
+        
+        d_str = date.fromisoformat(temp_report.get("work_date")).strftime("%d.%m.%Y")
+        
+        text = (
+            f"✅ *Отчет сохранен*\n\n"
+            f"📅 Дата: *{d_str}*\n"
+            f"Работа: *{temp_report.get('activity')}*\n"
+            f"Место: *{temp_report.get('location')}*\n"
+            f"Часы: *{temp_report.get('hours')}*\n"
+            f"ID: `#{report_id}`"
+        )
+        
+        clear_state(user_id)
+        client.send_message(to=user_id, text=text)
+        show_main_menu(client, user_id, u)
+
+    elif data == "edit:worker":
+        # Restart flow
+        show_date_selection(client, user_id, prefix="work:date")
+
+    elif data == "confirm:brig":
+        state = get_state(user_id)
+        temp_report = state["data"].get("temp_report")
+        if not temp_report:
+            client.send_message(to=user_id, text="❌ Данные устарели. Начните заново.")
+            return
+            
+        # Save report
+        u = get_user(user_id)
+        username = u.get("full_name") if u else user_id
+        
+        report_id = save_brigadier_report(
+            user_id=user_id,
+            username=username,
+            work_type=temp_report["work_type"],
+            rows=temp_report["rows"],
+            field=temp_report["field"],
+            bags=temp_report.get("bags", 0),
+            workers=temp_report["workers"],
+            work_date=temp_report["work_date"]
+        )
+        
+        # Auto-export
+        if GOOGLE_SHEETS_AVAILABLE:
+            try:
+                export_brigadier_report_to_sheet(report_id)
+            except Exception as e:
+                logging.error(f"Auto-export error: {e}")
+        
+        d_str = date.fromisoformat(temp_report["work_date"]).strftime("%d.%m.%Y")
+        
+        text = (
+            f"✅ *Отчет сохранен*\n\n"
+            f"📅 Дата: *{d_str}*\n"
+            f"Тип: *{temp_report['work_type']}*\n"
+            f"Рядов: *{temp_report['rows']}*\n"
+            f"Поле: *{temp_report['field']}*\n"
+        )
+        if temp_report.get("bags"):
+             text += f"Сеток: *{temp_report['bags']}*\n"
+             
+        text += (
+            f"Людей: *{temp_report['workers']}*\n"
+            f"ID отчета: `#{report_id}`"
+        )
+        
+        clear_state(user_id)
+        client.send_message(to=user_id, text=text)
+        show_main_menu(client, user_id, u)
+
+    elif data == "edit:brig":
+        # Restart brigadier flow
+        # We need to know the date to restart correctly, or just go to date selection
+        # Let's go to date selection for simplicity
+        show_date_selection(client, user_id, prefix="brig:date")
+    
     elif data.startswith("edit:del:"):
         try:
             rid = int(data.split(":")[2])
@@ -1643,6 +1866,11 @@ def handle_callback(client, btn: CallbackObject):
         client.send_message(to=user_id, text=text)
         show_brigadier_stats_menu(client, user_id)
         
+    elif data == "reminder:cancel":
+        today_str = date.today().isoformat()
+        set_reminder_status(user_id, today_str, "disabled")
+        client.send_message(to=user_id, text="🔕 Уведомления на сегодня отключены.")
+
     elif data == "brig:stats:week":
         text = get_brigadier_stats(user_id, 'week')
         client.send_message(to=user_id, text=text)
@@ -2102,35 +2330,36 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
             
         work_data = state["data"].get("work", {})
         
-        # Save report
-        u = get_user(user_id)
-        reg_name = u.get("full_name") if u else user_id
+        # Prepare temp report for confirmation
+        temp_report = {
+            "location": work_data.get("location"),
+            "loc_grp": work_data.get("loc_grp"),
+            "activity": work_data.get("activity"),
+            "act_grp": work_data.get("grp"),
+            "work_date": work_data.get("date"),
+            "hours": hours
+        }
         
-        report_id = insert_report(
-            user_id=user_id,
-            reg_name=reg_name,
-            location=work_data.get("location"),
-            loc_grp=work_data.get("loc_grp"),
-            activity=work_data.get("activity"),
-            act_grp=work_data.get("grp"),
-            work_date=work_data.get("date"),
-            hours=hours
-        )
+        state["data"]["temp_report"] = temp_report
+        set_state(user_id, "waiting_confirmation_worker", state["data"])
         
-        d_str = date.fromisoformat(work_data.get("date")).strftime("%d.%m.%Y")
+        d_str = date.fromisoformat(temp_report["work_date"]).strftime("%d.%m.%Y")
         
         text = (
-            f"✅ *Отчет сохранен*\n\n"
+            f"📋 *Проверьте данные*\n\n"
             f"📅 Дата: *{d_str}*\n"
-            f"Работа: *{work_data.get('activity')}*\n"
-            f"Место: *{work_data.get('location')}*\n"
-            f"Часы: *{hours}*\n"
-            f"ID: `#{report_id}`"
+            f"Работа: *{temp_report['activity']}*\n"
+            f"Место: *{temp_report['location']}*\n"
+            f"Часы: *{hours}*\n\n"
+            f"Все верно?"
         )
         
-        clear_state(user_id)
-        client.send_message(to=user_id, text=text)
-        show_main_menu(client, user_id, u)
+        buttons = [
+            Button(title="✅ Подтвердить", callback_data="confirm:worker"),
+            Button(title="✏️ Изменить", callback_data="edit:worker")
+        ]
+        
+        client.send_message(to=user_id, text=text, buttons=buttons)
         return
 
     if current_state == "waiting_record_selection":
@@ -2433,42 +2662,36 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
         # Получаем дату из состояния
         work_date = state["data"].get("date", date.today().isoformat())
         
-        # Сохраняем отчет
-        u = get_user(user_id)
-        username = u.get("full_name") if u else user_id
-        report_id = save_brigadier_report(
-            user_id=user_id,
-            username=username,
-            work_type=state["data"]["work_type"],
-            rows=state["data"]["rows"],
-            field=state["data"]["field"],
-            bags=0,  # Для кабачков сетки не используются
-            workers=workers,
-            work_date=work_date
-        )
+        temp_report = {
+            "work_type": state["data"]["work_type"],
+            "rows": state["data"]["rows"],
+            "field": state["data"]["field"],
+            "bags": 0,
+            "workers": workers,
+            "work_date": work_date
+        }
         
-        # Авто-экспорт
-        if GOOGLE_SHEETS_AVAILABLE:
-            try:
-                export_brigadier_report_to_sheet(report_id)
-            except Exception as e:
-                logging.error(f"Auto-export error: {e}")
+        state["data"]["temp_report"] = temp_report
+        set_state(user_id, "waiting_confirmation_brigadier", state["data"])
         
-        # Форматируем дату для вывода
         d_str = date.fromisoformat(work_date).strftime("%d.%m.%Y")
         
         text = (
-            f"✅ *Отчет сохранен*\n\n"
+            f"📋 *Проверьте данные*\n\n"
             f"📅 Дата: *{d_str}*\n"
-            f"Тип: *{state['data']['work_type']}*\n"
-            f"Рядов: *{state['data']['rows']}*\n"
-            f"Поле: *{state['data']['field']}*\n"
-            f"Людей: *{workers}*\n"
-            f"ID отчета: `#{report_id}`"
+            f"Тип: *{temp_report['work_type']}*\n"
+            f"Рядов: *{temp_report['rows']}*\n"
+            f"Поле: *{temp_report['field']}*\n"
+            f"Людей: *{workers}*\n\n"
+            f"Все верно?"
         )
-        clear_state(user_id)
-        client.send_message(to=user_id, text=text)
-        show_main_menu(client, user_id, u)
+        
+        buttons = [
+            Button(title="✅ Подтвердить", callback_data="confirm:brig"),
+            Button(title="✏️ Изменить", callback_data="edit:brig")
+        ]
+        
+        client.send_message(to=user_id, text=text, buttons=buttons)
         return
     
     # Форма картошки: ряды
@@ -2510,35 +2733,37 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
         # Получаем дату из состояния
         work_date = state["data"].get("date", date.today().isoformat())
         
-        # Сохраняем отчет
-        u = get_user(user_id)
-        username = u.get("full_name") if u else user_id
-        report_id = save_brigadier_report(
-            user_id=user_id,
-            username=username,
-            work_type=state["data"]["work_type"],
-            rows=state["data"]["rows"],
-            field=state["data"]["field"],
-            bags=state["data"]["bags"],
-            workers=workers,
-            work_date=work_date
-        )
+        temp_report = {
+            "work_type": state["data"]["work_type"],
+            "rows": state["data"]["rows"],
+            "field": state["data"]["field"],
+            "bags": state["data"]["bags"],
+            "workers": workers,
+            "work_date": work_date
+        }
         
-        # Форматируем дату для вывода
+        state["data"]["temp_report"] = temp_report
+        set_state(user_id, "waiting_confirmation_brigadier", state["data"])
+        
         d_str = date.fromisoformat(work_date).strftime("%d.%m.%Y")
         
         text = (
-            f"✅ *Отчет сохранен*\n\n"
+            f"📋 *Проверьте данные*\n\n"
             f"📅 Дата: *{d_str}*\n"
-            f"Тип: *{state['data']['work_type']}*\n"
-            f"Выкопано рядов: *{state['data']['rows']}*\n"
-            f"Сеток: *{state['data']['bags']}*\n"
-            f"Людей: *{workers}*\n"
-            f"ID отчета: `#{report_id}`"
+            f"Тип: *{temp_report['work_type']}*\n"
+            f"Рядов: *{temp_report['rows']}*\n"
+            f"Сеток: *{temp_report['bags']}*\n"
+            f"Поле: *{temp_report['field']}*\n"
+            f"Людей: *{workers}*\n\n"
+            f"Все верно?"
         )
-        clear_state(user_id)
-        client.send_message(to=user_id, text=text)
-        show_main_menu(client, user_id, u)
+        
+        buttons = [
+            Button(title="✅ Подтвердить", callback_data="confirm:brig"),
+            Button(title="✏️ Изменить", callback_data="edit:brig")
+        ]
+        
+        client.send_message(to=user_id, text=text, buttons=buttons)
         return
     
     # Админ: добавление бригадира
@@ -2694,8 +2919,14 @@ if __name__ == "__main__":
         else:
             logging.warning("⚠️ Google Sheets не инициализирован, работа продолжится без синхронизации")
     
+    # Scheduler setup
+    scheduler = BackgroundScheduler(timezone=TZ)
+    
+    # Reminder job (every minute)
+    scheduler.add_job(check_reminders, 'interval', minutes=1)
+    logging.info("⏰ Reminder scheduler started")
+
     if AUTO_EXPORT_ENABLED:
-        scheduler = BackgroundScheduler(timezone=TZ)
         cron_parts = AUTO_EXPORT_CRON.split()
         if len(cron_parts) == 5:
             minute, hour, day, month, day_of_week = cron_parts
@@ -2707,10 +2938,11 @@ if __name__ == "__main__":
                 day_of_week=day_of_week
             )
             scheduler.add_job(scheduled_export, trigger)
-            scheduler.start()
             logging.info(f"Scheduled export enabled: {AUTO_EXPORT_CRON}")
         else:
             logging.warning(f"Invalid cron expression: {AUTO_EXPORT_CRON}")
+            
+    scheduler.start()
     
     logging.info("🤖 WhatsApp бот запущен!")
     logging.info("📡 Слушаю на %s:%s", SERVER_HOST, SERVER_PORT)
