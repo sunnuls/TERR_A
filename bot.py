@@ -2756,25 +2756,6 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
             # IT flow: Date selected, now ask for hours
             # Calculate current IT hours for today
             current_sum = sum_hours_for_user_date(user_id, selected_date, include_it=True)
-            # Note: sum_hours_for_user_date by default excludes IT if include_it=False.
-            # We need to make sure we count IT hours correctly.
-            # Let's check the implementation of sum_hours_for_user_date.
-            # It has an include_it parameter.
-            
-            # We need to pass include_it=True to count IT hours?
-            # Actually, for IT user we want to see how many hours *they* have logged.
-            # The function sum_hours_for_user_date logic:
-            # if include_it: SELECT ... WHERE user_id=? AND work_date=?
-            # else: SELECT ... WHERE ... AND location_grp != 'it' ...
-            # So yes, include_it=True will sum ALL hours for this user.
-            
-            # However, for IT input validation we specifically check IT hours later.
-            # But for display "Already entered", showing total is fine.
-            
-            # Actually, let's use a specific query for IT hours if we want to be precise about "IT hours limit",
-            # but the user just asked "how many hours already in day".
-            
-            current_sum = sum_hours_for_user_date(user_id, selected_date, include_it=True)
             
             d_str = date.fromisoformat(selected_date).strftime("%d.%m.%Y")
             text = (
@@ -2783,6 +2764,7 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
                 f"Введите *количество часов*:"
             )
             
+            # IMPORTANT: We must pass the selected date in the data
             set_state(user_id, "it_waiting_hours", {"date": selected_date}, save_to_history=False)
             quick_replies = [{"id": "back_to_date", "title": "🔙 Back"}]
             client.send_text_with_quick_replies(to=user_id, text=text, quick_replies=quick_replies)
