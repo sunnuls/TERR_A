@@ -1598,16 +1598,16 @@ def handle_callback(client, btn: CallbackObject):
             return
         else:
             # Fallback: return to location group selection
-        state = get_state(user_id)
-        work_data = state["data"].get("work", {})
-        activity_name = work_data.get("activity", "работа")
-        
-        buttons = [
-            Button(title="Поля", callback_data="work:locgrp:fields"),
-            Button(title="Склад", callback_data="work:locgrp:ware"),
+            state = get_state(user_id)
+            work_data = state["data"].get("work", {})
+            activity_name = work_data.get("activity", "работа")
+            
+            buttons = [
+                Button(title="Поля", callback_data="work:locgrp:fields"),
+                Button(title="Склад", callback_data="work:locgrp:ware"),
                 Button(title="🔙 Назад", callback_data="back:prev"),
-        ]
-        client.send_message(to=user_id, text=f"✅ Выбрано: *{activity_name}*\n\nТеперь выберите *локацию*:", buttons=buttons)
+            ]
+            client.send_message(to=user_id, text=f"✅ Выбрано: *{activity_name}*\n\nТеперь выберите *локацию*:", buttons=buttons)
         return
     
     elif data.startswith("work:date:"):
