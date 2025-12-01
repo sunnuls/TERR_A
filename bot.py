@@ -70,6 +70,7 @@ APP_SECRET = os.getenv("APP_SECRET")
 SERVER_HOST = os.getenv("SERVER_HOST", "0.0.0.0")
 SERVER_PORT = int(os.getenv("SERVER_PORT", "8000"))
 WA_BASE_URL = os.getenv("WA_BASE_URL", "https://waba-v2.360dialog.io")
+REPORT_RELAY_PHONE = os.getenv("REPORT_RELAY_PHONE")
 
 # WA: critical env check
 if not WHATSAPP_TOKEN:
@@ -868,6 +869,30 @@ wa = WhatsApp360Client(
     base_url=WA_BASE_URL
 )
 logging.info("✅ Initialized 360dialog WhatsApp client")
+
+def send_report_to_relay(original_from: str, original_text: str):
+    """
+    Отправляет копию отчета на релейный номер.
+    """
+    if not REPORT_RELAY_PHONE:
+        return
+
+    try:
+        now_str = datetime.now().strftime("%d.%m.%Y %H:%M")
+        
+        # Формируем сообщение для релея
+        relay_text = (
+            f"📋 Новый отчёт\n"
+            f"Дата/время: {now_str}\n"
+            f"Номер: {original_from}\n"
+            f"──────────────\n"
+            f"{original_text}"
+        )
+        
+        wa.send_message(to=REPORT_RELAY_PHONE, text=relay_text)
+        logging.info(f"✅ Report relayed to {REPORT_RELAY_PHONE}")
+    except Exception as e:
+        logging.error(f"❌ Failed to relay report: {e}")
 
 @app.before_request
 def log_request():
@@ -1766,6 +1791,10 @@ def handle_callback(client, btn: CallbackObject):
         
         clear_state(user_id)
         client.send_message(to=user_id, text=text)
+        
+        # Отправляем копию отчета на релейный номер
+        send_report_to_relay(original_from=user_id, original_text=text)
+        
         show_main_menu(client, user_id, u)
 
     elif data == "edit:worker":
