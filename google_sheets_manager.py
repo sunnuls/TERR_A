@@ -754,3 +754,39 @@ def export_brigadier_reports() -> Tuple[int, str]:
     except Exception as e:
         logger.error(f"❌ Ошибка массового экспорта бригадиров: {e}")
         return 0, str(e)
+
+def delete_all_files_in_folder() -> Tuple[int, str]:
+    """
+    Удаляет ВСЕ файлы в целевой папке Google Drive.
+    Используется для полного сброса.
+    """
+    if not _initialized:
+        if not initialize_google_sheets():
+            return 0, "Google Sheets не инициализирован"
+            
+    if not DRIVE_FOLDER_ID:
+        return 0, "DRIVE_FOLDER_ID не настроен"
+        
+    try:
+        # Ищем все файлы в папке
+        q = f"'{DRIVE_FOLDER_ID}' in parents and trashed = false"
+        results = _drive_service.files().list(q=q, fields="files(id, name)").execute()
+        files = results.get('files', [])
+        
+        if not files:
+            return 0, "Папка пуста"
+            
+        count = 0
+        for f in files:
+            try:
+                _drive_service.files().delete(fileId=f['id']).execute()
+                logger.info(f"🗑 Удален файл: {f['name']} ({f['id']})")
+                count += 1
+            except Exception as e:
+                logger.error(f"❌ Ошибка удаления файла {f['name']}: {e}")
+                
+        return count, f"Удалено файлов: {count}"
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка очистки папки: {e}")
+        return 0, str(e)
