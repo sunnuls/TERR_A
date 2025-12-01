@@ -1231,7 +1231,7 @@ def show_date_selection(client: WhatsApp360Client, user_id: str, prefix: str):
     )
     
     # Сохраняем состояние (на случай если понадобится fallback)
-    set_state(user_id, "date_selected_via_list", {"dates_list": dates, "next_prefix": prefix})
+    set_state(user_id, "waiting_date_selection_universal", {"dates_list": dates, "next_prefix": prefix})
 
 @wa.on_callback_button
 def handle_callback(client, btn: CallbackObject):
@@ -2543,6 +2543,8 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
     # 2. Обработка состояний (FSM)
     state = get_state(user_id)
     current_state = state.get("state")
+    
+    logging.info(f"📩 Message from {user_id}: '{message_text}' | State: {current_state}")
 
     if current_state == "waiting_name":
         # Feature 5: Mandatory Full Name Registration
