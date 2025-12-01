@@ -71,6 +71,10 @@ SERVER_HOST = os.getenv("SERVER_HOST", "0.0.0.0")
 SERVER_PORT = int(os.getenv("SERVER_PORT", "8000"))
 WA_BASE_URL = os.getenv("WA_BASE_URL", "https://waba-v2.360dialog.io")
 REPORT_RELAY_PHONE = os.getenv("REPORT_RELAY_PHONE")
+if REPORT_RELAY_PHONE:
+    logging.info(f"🔧 REPORT_RELAY_PHONE loaded: {REPORT_RELAY_PHONE}")
+else:
+    logging.warning("⚠️ REPORT_RELAY_PHONE not set")
 
 # WA: critical env check
 if not WHATSAPP_TOKEN:
