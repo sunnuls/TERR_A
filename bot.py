@@ -590,15 +590,15 @@ def sum_hours_for_user_date(user_id:str, work_date:str, exclude_report_id: Optio
     with connect() as con, closing(con.cursor()) as c:
         if exclude_report_id:
             if include_it:
-            r = c.execute("SELECT COALESCE(SUM(hours),0) FROM reports WHERE user_id=? AND work_date=? AND id<>?",
-                          (user_id, work_date, exclude_report_id)).fetchone()
-        else:
+                r = c.execute("SELECT COALESCE(SUM(hours),0) FROM reports WHERE user_id=? AND work_date=? AND id<>?",
+                              (user_id, work_date, exclude_report_id)).fetchone()
+            else:
                 r = c.execute("SELECT COALESCE(SUM(hours),0) FROM reports WHERE user_id=? AND work_date=? AND id<>? AND location_grp != 'it' AND activity_grp != 'it'",
                               (user_id, work_date, exclude_report_id)).fetchone()
         else:
             if include_it:
-            r = c.execute("SELECT COALESCE(SUM(hours),0) FROM reports WHERE user_id=? AND work_date=?",
-                          (user_id, work_date)).fetchone()
+                r = c.execute("SELECT COALESCE(SUM(hours),0) FROM reports WHERE user_id=? AND work_date=?",
+                              (user_id, work_date)).fetchone()
             else:
                 r = c.execute("SELECT COALESCE(SUM(hours),0) FROM reports WHERE user_id=? AND work_date=? AND location_grp != 'it' AND activity_grp != 'it'",
                               (user_id, work_date)).fetchone()
