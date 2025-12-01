@@ -1254,9 +1254,8 @@ def handle_callback(client, btn: CallbackObject):
         if not is_it(user_id):
             client.send_message(to=user_id, text="❌ Нет прав")
             return
-        # Запрашиваем количество часов
-        set_state(user_id, "it_waiting_hours", {}, save_to_history=False)
-        client.send_message(to=user_id, text="Введите *количество часов*:\n\n0. 🔙 Назад")
+        # New flow: Start with date selection for IT
+        show_date_selection(client, user_id, prefix="it:date")
         return
     
     if data == "menu:root":
@@ -1707,7 +1706,19 @@ def handle_callback(client, btn: CallbackObject):
             acts_kind = state["data"].get("acts_kind", "tech")
             save_to_history(user_id, f"work:grp:{acts_kind}")
             set_state(user_id, "waiting_hours", state["data"], save_to_history=False)
-            client.send_message(to=user_id, text="Введите *количество часов*:\n\n0. 🔙 Назад")
+            
+            # Calculate current hours for today
+            work_date = state["data"].get("work", {}).get("date", date.today().isoformat())
+            current_sum = sum_hours_for_user_date(user_id, work_date)
+            d_str = date.fromisoformat(work_date).strftime("%d.%m.%Y")
+            
+            text = (
+                f"📅 Дата: *{d_str}*\n"
+                f"📊 Уже внесено: *{current_sum}* ч\n\n"
+                f"Введите *количество часов*:"
+            )
+            quick_replies = [{"id": "back_to_loc", "title": "🔙 Back"}]
+            client.send_text_with_quick_replies(to=user_id, text=text, quick_replies=quick_replies)
             
         else:
             state["data"]["work"] = work_data
@@ -2534,6 +2545,12 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
     current_state = state.get("state")
 
     if current_state == "waiting_name":
+        # Feature 5: Mandatory Full Name Registration
+        parts = message_text.strip().split()
+        if len(parts) < 2:
+            client.send_message(to=user_id, text="❌ Пожалуйста, введите **Фамилию** и **Имя** (два слова).\nНапример: *Иванов Иван*")
+            return
+            
         if len(message_text) < 3:
             client.send_message(to=user_id, text="❌ Слишком короткое имя. Введите Фамилию и Имя.")
             return
@@ -2682,7 +2699,19 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
         acts_kind = state["data"].get("acts_kind", "tech")
         save_to_history(user_id, f"work:grp:{acts_kind}")
         set_state(user_id, "waiting_hours", state["data"], save_to_history=False)
-        client.send_message(to=user_id, text="Введите *количество часов*:\n\n0. 🔙 Назад")
+        
+        # Calculate current hours
+        work_date = state["data"].get("work", {}).get("date", date.today().isoformat())
+        current_sum = sum_hours_for_user_date(user_id, work_date)
+        d_str = date.fromisoformat(work_date).strftime("%d.%m.%Y")
+        
+        text = (
+            f"📅 Дата: *{d_str}*\n"
+            f"📊 Уже внесено: *{current_sum}* ч\n\n"
+            f"Введите *количество часов*:"
+        )
+        quick_replies = [{"id": "back_to_loc", "title": "🔙 Back"}]
+        client.send_text_with_quick_replies(to=user_id, text=text, quick_replies=quick_replies)
         return
 
     if current_state == "waiting_date_selection_universal":
@@ -2723,6 +2752,41 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
             set_state(user_id, "brig_menu_selected", {"date": selected_date})
             show_brigadier_menu(client, user_id, selected_date)
             
+        elif next_prefix == "it:date":
+            # IT flow: Date selected, now ask for hours
+            # Calculate current IT hours for today
+            current_sum = sum_hours_for_user_date(user_id, selected_date, include_it=True)
+            # Note: sum_hours_for_user_date by default excludes IT if include_it=False.
+            # We need to make sure we count IT hours correctly.
+            # Let's check the implementation of sum_hours_for_user_date.
+            # It has an include_it parameter.
+            
+            # We need to pass include_it=True to count IT hours?
+            # Actually, for IT user we want to see how many hours *they* have logged.
+            # The function sum_hours_for_user_date logic:
+            # if include_it: SELECT ... WHERE user_id=? AND work_date=?
+            # else: SELECT ... WHERE ... AND location_grp != 'it' ...
+            # So yes, include_it=True will sum ALL hours for this user.
+            
+            # However, for IT input validation we specifically check IT hours later.
+            # But for display "Already entered", showing total is fine.
+            
+            # Actually, let's use a specific query for IT hours if we want to be precise about "IT hours limit",
+            # but the user just asked "how many hours already in day".
+            
+            current_sum = sum_hours_for_user_date(user_id, selected_date, include_it=True)
+            
+            d_str = date.fromisoformat(selected_date).strftime("%d.%m.%Y")
+            text = (
+                f"📅 Дата: *{d_str}*\n"
+                f"📊 Уже внесено: *{current_sum}* ч\n\n"
+                f"Введите *количество часов*:"
+            )
+            
+            set_state(user_id, "it_waiting_hours", {"date": selected_date}, save_to_history=False)
+            quick_replies = [{"id": "back_to_date", "title": "🔙 Back"}]
+            client.send_text_with_quick_replies(to=user_id, text=text, quick_replies=quick_replies)
+            
         return
 
     # Обработка состояния для IT роли - ввод часов для star
@@ -2733,11 +2797,16 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
             return
         
         # Обработка кнопки "Назад" (0)
-        if message_text == "0":
-            if go_back(client, user_id):
+        # Обработка кнопки "Назад" (0) или Quick Reply
+        if message_text == "0" or message_text == "back_to_date":
+            # Return to date selection
+            show_date_selection(client, user_id, prefix="it:date")
+            return
+        
+        if message_text == "back:prev": # Generic back
+             if go_back(client, user_id):
                 return
-            else:
-                # Fallback: возврат в главное меню
+             else:
                 clear_state(user_id)
                 u = get_user(user_id)
                 show_main_menu(client, user_id, u)
@@ -2753,7 +2822,7 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
             return
         
         # Автоматически заполняем данные для IT отчета
-        work_date = date.today().isoformat()
+        work_date = state["data"].get("date", date.today().isoformat())
         
         # Проверка суммы часов за день (IT отчеты не учитываются в общей статистике, но проверяем их отдельно)
         # Для IT роли проверяем только IT отчеты
@@ -2827,21 +2896,45 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
         return
 
     if current_state == "waiting_hours":
-        # Обработка кнопки "Назад" (0)
-        if message_text == "0":
-            if go_back(client, user_id):
-                return
+        # Обработка кнопки "Назад" (0) или Quick Reply
+        if message_text == "0" or message_text == "back_to_loc":
+            # Fallback: возврат к выбору локации
+            state = get_state(user_id)
+            work_data = state["data"].get("work", {})
+            activity_name = work_data.get("activity", "работа")
+            
+            # Check if we came from warehouse (skip loc selection) or fields
+            loc_grp = work_data.get("loc_grp")
+            
+            if loc_grp == GROUP_WARE:
+                 # If warehouse, we skipped location selection, so back should go to loc group selection
+                 # But in handle_callback we saved history before waiting_hours.
+                 # Let's try go_back first.
+                 if go_back(client, user_id):
+                     return
+                 else:
+                     # Fallback
+                     buttons = [
+                        Button(title="Поля", callback_data="work:locgrp:fields"),
+                        Button(title="Склад", callback_data="work:locgrp:ware"),
+                        Button(title="🔙 Назад", callback_data="back:prev"),
+                    ]
+                     client.send_message(to=user_id, text=f"✅ Выбрано: *{activity_name}*\n\nТеперь выберите *локацию*:", buttons=buttons)
+                     return
             else:
-                # Fallback: возврат к выбору локации
-                state = get_state(user_id)
-                work_data = state["data"].get("work", {})
-                activity_name = work_data.get("activity", "работа")
-                buttons = [
-                    Button(title="Поля", callback_data="work:locgrp:fields"),
-                    Button(title="Склад", callback_data="work:locgrp:ware"),
-                    Button(title="🔙 Назад", callback_data="back:prev"),
-                ]
-                client.send_message(to=user_id, text=f"✅ Выбрано: *{activity_name}*\n\nТеперь выберите *локацию*:", buttons=buttons)
+                # Fields - go back to location selection
+                # We can try go_back, but if we want to show the list again explicitly:
+                locations = list_locations_with_id(GROUP_FIELDS)
+                state["data"]["locs"] = locations
+                set_state(user_id, "waiting_location_selection", state["data"], save_to_history=False)
+                
+                lines = ["Выберите *место* (отправьте номер или название):"]
+                for i, (lid, name) in enumerate(locations, 1):
+                    lines.append(f"{i}. {name}")
+                
+                text = "\n".join(lines)
+                quick_replies = [{"id": "cancel_location", "title": "🔙 Back"}]
+                client.send_text_with_quick_replies(to=user_id, text=text, quick_replies=quick_replies)
                 return
         
         if not message_text.isdigit():

@@ -142,13 +142,13 @@ def create_monthly_sheet(year: int, month: int) -> Tuple[bool, str, str]:
         
         # Добавляем заголовки
         headers = [
-            ['Дата создания', 'User ID', 'Имя', 'Локация', 'Группа локации', 
-             'Вид работы', 'Группа работы', 'Дата работы', 'Часы']
+            ['Дата создания', 'User ID', 'Имя', 'Локация', 
+             'Вид работы', 'Дата работы', 'Часы']
         ]
         
         _sheets_service.spreadsheets().values().update(
             spreadsheetId=spreadsheet_id,
-            range='Отчеты!A1:I1',
+            range='Отчеты!A1:G1',
             valueInputOption='RAW',
             body={'values': headers}
         ).execute()
@@ -330,9 +330,7 @@ def export_report_to_sheet(report_id: int) -> bool:
             user_id,
             reg_name or "",
             location,
-            loc_grp,
             activity,
-            act_grp,
             work_date,
             hours
         ]]
@@ -340,7 +338,7 @@ def export_report_to_sheet(report_id: int) -> bool:
         # Добавляем строку
         result = _sheets_service.spreadsheets().values().append(
             spreadsheetId=spreadsheet_id,
-            range='Отчеты!A2:I2',
+            range='Отчеты!A2:G2',
             valueInputOption='RAW',
             insertDataOption='INSERT_ROWS',
             body={'values': values}
@@ -447,16 +445,14 @@ def sync_report_update(report_id: int) -> bool:
             report_row[1],  # user_id
             report_row[2] or "",  # reg_name
             report_row[3],  # location
-            report_row[4],  # location_grp
             report_row[5],  # activity
-            report_row[6],  # activity_grp
             report_row[7],  # work_date
             report_row[8],  # hours
         ]]
         
         _sheets_service.spreadsheets().values().update(
             spreadsheetId=spreadsheet_id,
-            range=f'{sheet_name}!A{row_number}:I{row_number}',
+            range=f'{sheet_name}!A{row_number}:G{row_number}',
             valueInputOption='RAW',
             body={'values': values}
         ).execute()
