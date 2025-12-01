@@ -874,9 +874,15 @@ wa = WhatsApp360Client(
 )
 logging.info("✅ Initialized 360dialog WhatsApp client")
 
-def send_report_to_relay(original_from: str, original_text: str):
+def send_report_to_relay(original_from: str, original_text: str, user_name: str = None, is_edit: bool = False):
     """
     Отправляет копию отчета на релейный номер.
+    
+    Args:
+        original_from: Номер телефона отправителя
+        original_text: Текст отчета
+        user_name: Имя пользователя (опционально)
+        is_edit: Флаг редактирования отчета
     """
     if not REPORT_RELAY_PHONE:
         return
@@ -884,17 +890,30 @@ def send_report_to_relay(original_from: str, original_text: str):
     try:
         now_str = datetime.now().strftime("%d.%m.%Y %H:%M")
         
+        # Используем имя пользователя, если доступно, иначе номер
+        sender_info = user_name if user_name else original_from
+        
         # Формируем сообщение для релея
-        relay_text = (
-            f"📋 Новый отчёт\n"
-            f"Дата/время: {now_str}\n"
-            f"Номер: {original_from}\n"
-            f"──────────────\n"
-            f"{original_text}"
-        )
+        if is_edit:
+            relay_text = (
+                f"✏️ Отчёт изменен\n"
+                f"Дата/время: {now_str}\n"
+                f"Пользователь: {sender_info}\n"
+                f"──────────────\n"
+                f"{original_text}"
+            )
+        else:
+            relay_text = (
+                f"📋 Новый отчёт\n"
+                f"Дата/время: {now_str}\n"
+                f"Пользователь: {sender_info}\n"
+                f"──────────────\n"
+                f"{original_text}"
+            )
         
         wa.send_message(to=REPORT_RELAY_PHONE, text=relay_text)
-        logging.info(f"✅ Report relayed to {REPORT_RELAY_PHONE}")
+        action = "edited" if is_edit else "relayed"
+        logging.info(f"✅ Report {action} to {REPORT_RELAY_PHONE}")
     except Exception as e:
         logging.error(f"❌ Failed to relay report: {e}")
 
@@ -1797,7 +1816,7 @@ def handle_callback(client, btn: CallbackObject):
         client.send_message(to=user_id, text=text)
         
         # Отправляем копию отчета на релейный номер
-        send_report_to_relay(original_from=user_id, original_text=text)
+        send_report_to_relay(original_from=user_id, original_text=text, user_name=reg_name, is_edit=False)
         
         show_main_menu(client, user_id, u)
 
@@ -2934,8 +2953,12 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
         
         state["data"]["edit_id"] = rid
         state["data"]["edit_date"] = wdate
+        state["data"]["edit_old_hours"] = h
+        state["data"]["edit_activity"] = act
+        state["data"]["edit_location"] = loc
         set_state(user_id, "waiting_edit_hours", state["data"])
-        client.send_message(to=user_id, text=text)
+        buttons = [Button(title="🔙 Назад", callback_data="back:prev")]
+        client.send_message(to=user_id, text=text, buttons=buttons)
         return
 
     if current_state == "waiting_del_selection":
@@ -3040,8 +3063,17 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
         return
 
     if current_state == "waiting_edit_hours":
+        if message_text == "0":
+            if go_back(client, user_id):
+                return
+            else:
+                clear_state(user_id)
+                u = get_user(user_id)
+                show_main_menu(client, user_id, u)
+                return
+        
         if not message_text.isdigit():
-            client.send_message(to=user_id, text="❌ Введите число (1-24).")
+            client.send_message(to=user_id, text="❌ Введите число (1-24) или 0 для возврата.")
             return
         
         new_h = int(message_text)
@@ -3071,9 +3103,27 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
         
         ok = update_report_hours(rid, user_id, new_h)
         if ok:
+            # Получаем данные для уведомления
+            old_hours = state["data"].get("edit_old_hours", "?")
+            activity = state["data"].get("edit_activity", "работа")
+            location = state["data"].get("edit_location", "место")
+            
+            # Формируем текст уведомления
+            edit_text = (
+                f"📝 Запись #{rid}\n"
+                f"Дата: {work_d}\n"
+                f"Место: {location}\n"
+                f"Работа: {activity}\n"
+                f"Часы: {old_hours} → *{new_h}*"
+            )
+            
+            # Отправляем уведомление на релейный номер
+            u = get_user(user_id)
+            user_name = (u or {}).get("full_name") or user_id
+            send_report_to_relay(original_from=user_id, original_text=edit_text, user_name=user_name, is_edit=True)
+            
             clear_state(user_id)
             client.send_message(to=user_id, text="✅ Обновлено")
-            u = get_user(user_id)
             show_main_menu(client, user_id, u)
         else:
             client.send_message(to=user_id, text="❌ Не получилось обновить")
