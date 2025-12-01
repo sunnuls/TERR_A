@@ -1254,8 +1254,27 @@ def handle_callback(client, btn: CallbackObject):
         if not is_it(user_id):
             client.send_message(to=user_id, text="❌ Нет прав")
             return
-        # New flow: Start with date selection for IT
+    # New flow: Start with date selection for IT
         show_date_selection(client, user_id, prefix="it:date")
+        return
+    
+    elif data.startswith("it:date:"):
+        # IT flow: Date selected via list
+        selected_date = data.split(":")[2]
+        
+        # Calculate current IT hours for today
+        current_sum = sum_hours_for_user_date(user_id, selected_date, include_it=True)
+        
+        d_str = date.fromisoformat(selected_date).strftime("%d.%m.%Y")
+        text = (
+            f"📅 Дата: *{d_str}*\n"
+            f"📊 Уже внесено: *{current_sum}* ч\n\n"
+            f"Введите *количество часов*:"
+        )
+        
+        set_state(user_id, "it_waiting_hours", {"date": selected_date}, save_to_history=False)
+        quick_replies = [{"id": "back_to_date", "title": "🔙 Back"}]
+        client.send_text_with_quick_replies(to=user_id, text=text, quick_replies=quick_replies)
         return
     
     if data == "menu:root":
@@ -1596,8 +1615,7 @@ def handle_callback(client, btn: CallbackObject):
     elif data == "stats:week":
         cmd_my(client, btn)
     
-        client.send_message(to=user_id, text=f"✅ Выбрано: *{activity_name}*\n\nТеперь выберите *локацию*:", buttons=buttons)
-        return
+
     
     elif data == "cancel_activity":
         # Cancel activity selection, return to work type selection
