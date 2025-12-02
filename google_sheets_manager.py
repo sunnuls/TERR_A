@@ -32,8 +32,15 @@ GOOGLE_SCOPES = [
 OAUTH_CLIENT_JSON = os.getenv("OAUTH_CLIENT_JSON", "oauth_client.json")
 TOKEN_JSON_PATH = Path(os.getenv("TOKEN_JSON_PATH", "token.json"))
 DRIVE_FOLDER_ID = os.getenv("DRIVE_FOLDER_ID", "")
-EXPORT_PREFIX = os.getenv("EXPORT_PREFIX", "WorkLog")
+EXPORT_PREFIX = os.getenv("EXPORT_PREFIX", "ОТД")
 DB_PATH = os.path.join(os.getcwd(), "reports_whatsapp.db")
+
+# Русские названия месяцев
+MONTH_NAMES = {
+    1: "Январь", 2: "Февраль", 3: "Март", 4: "Апрель",
+    5: "Май", 6: "Июнь", 7: "Июль", 8: "Август",
+    9: "Сентябрь", 10: "Октябрь", 11: "Ноябрь", 12: "Декабрь"
+}
 
 # Глобальные переменные для сервисов
 _sheets_service = None
@@ -118,7 +125,7 @@ def create_monthly_sheet(year: int, month: int) -> Tuple[bool, str, str]:
     
     try:
         # Название таблицы
-        month_name = calendar.month_name[month]
+        month_name = MONTH_NAMES.get(month, calendar.month_name[month])
         title = f"{EXPORT_PREFIX} - {month_name} {year}"
         
         # Создаем таблицу
@@ -243,7 +250,7 @@ def get_or_create_monthly_sheet(year: int, month: int) -> Tuple[bool, str, str]:
     
     # Если в БД нет, ищем в Google Drive по имени
     try:
-        month_name = calendar.month_name[month]
+        month_name = MONTH_NAMES.get(month, calendar.month_name[month])
         title = f"{EXPORT_PREFIX} - {month_name} {year}"
         
         q = f"name = '{title}' and trashed = false"
@@ -563,7 +570,7 @@ def check_and_create_next_month_sheet() -> Tuple[bool, str]:
         # Создаем
         success, _, url = create_monthly_sheet(next_year, next_month)
         if success:
-            month_name = calendar.month_name[next_month]
+            month_name = MONTH_NAMES.get(next_month, calendar.month_name[next_month])
             return True, f"Создана таблица для {month_name} {next_year}: {url}"
         
         return False, ""
@@ -608,7 +615,7 @@ def create_brigadier_monthly_sheet(year: int, month: int) -> Tuple[bool, str, st
         return False, "", "Google Sheets не инициализирован"
     
     try:
-        month_name = calendar.month_name[month]
+        month_name = MONTH_NAMES.get(month, calendar.month_name[month])
         title = f"Бригадиры - {month_name} {year}"
         
         spreadsheet = {
@@ -660,7 +667,7 @@ def get_or_create_brigadier_sheet(year: int, month: int) -> Tuple[bool, str, str
     # Здесь упрощенная логика: ищем таблицу с нужным именем в нужной папке
     # Это медленнее, но не требует изменений схемы monthly_sheets
     try:
-        month_name = calendar.month_name[month]
+        month_name = MONTH_NAMES.get(month, calendar.month_name[month])
         title = f"Бригадиры - {month_name} {year}"
         q = f"name = '{title}' and trashed = false"
         if BRIGADIER_FOLDER_ID:
