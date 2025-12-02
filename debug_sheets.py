@@ -1,6 +1,11 @@
 
 import os
 import logging
+from dotenv import load_dotenv
+
+# Load environment variables first
+load_dotenv()
+
 from google_sheets_manager import initialize_google_sheets, is_initialized, check_and_create_next_month_sheet
 
 # Setup logging
