@@ -10,3 +10,11 @@ requests>=2.31.0
 
 # Для работы с датами и временем
 pytz>=2023.3
+
+# Планировщик задач
+apscheduler>=3.10.0
+
+# Google API
+google-auth>=2.22.0
+google-auth-oauthlib>=1.0.0
+google-api-python-client>=2.97.0
