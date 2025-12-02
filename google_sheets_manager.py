@@ -32,7 +32,7 @@ GOOGLE_SCOPES = [
 OAUTH_CLIENT_JSON = os.getenv("OAUTH_CLIENT_JSON", "oauth_client.json")
 TOKEN_JSON_PATH = Path(os.getenv("TOKEN_JSON_PATH", "token.json"))
 DRIVE_FOLDER_ID = os.getenv("DRIVE_FOLDER_ID", "")
-EXPORT_PREFIX = os.getenv("EXPORT_PREFIX", "ОТД")
+EXPORT_PREFIX = "ОТД"  # Force OTD prefix as per requirements
 DB_PATH = os.path.join(os.getcwd(), "reports_whatsapp.db")
 
 # Русские названия месяцев

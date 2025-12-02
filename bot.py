@@ -130,7 +130,7 @@ GOOGLE_SCOPES = [
 OAUTH_CLIENT_JSON = os.getenv("OAUTH_CLIENT_JSON", "oauth_client.json")
 TOKEN_JSON_PATH = Path(os.getenv("TOKEN_JSON_PATH", "token.json"))
 DRIVE_FOLDER_ID = os.getenv("DRIVE_FOLDER_ID", "")
-EXPORT_PREFIX = os.getenv("EXPORT_PREFIX", "WorkLog")
+EXPORT_PREFIX = "ОТД"
 
 # Расписание автоматического экспорта
 AUTO_EXPORT_ENABLED = os.getenv("AUTO_EXPORT_ENABLED", "false").lower() == "true"
@@ -1213,6 +1213,13 @@ def show_date_selection(client: WhatsApp360Client, user_id: str, prefix: str):
             "description": ""  # Можно добавить день недели если нужно
         })
     
+    # Добавляем кнопку Назад
+    rows.append({
+        "id": "back:prev",
+        "title": "🔙 Назад",
+        "description": "Вернуться в меню"
+    })
+    
     # Создаем секцию со списком дат
     sections = [
         {
@@ -1273,7 +1280,7 @@ def handle_callback(client, btn: CallbackObject):
         )
         
         set_state(user_id, "it_waiting_hours", {"date": selected_date}, save_to_history=False)
-        quick_replies = [{"id": "back_to_date", "title": "🔙 Back"}]
+        quick_replies = [{"id": "back_to_date", "title": "🔙 Назад"}]
         client.send_text_with_quick_replies(to=user_id, text=text, quick_replies=quick_replies)
         return
     
@@ -2323,44 +2330,10 @@ def handle_callback(client, btn: CallbackObject):
             lines.append(f"   ID: `{uid}`\n")
         text = "\n".join(lines)
         client.send_message(to=user_id, text=text)
-
-# ... (пропуск кода) ...
-
-    # Админ: добавление бригадира
-    if current_state == "adm_wait_brigadier_add":
-        # Ожидаем номер телефона или "Номер Имя"
-        text_parts = message_text.strip().split(maxsplit=1)
-        phone = text_parts[0]
-        custom_name = text_parts[1] if len(text_parts) > 1 else None
-        
-        if not phone.isdigit() or len(phone) < 10:
-            client.send_message(to=user_id, text="❌ Введите корректный номер телефона (например: 79001234567) или 'Номер Имя':")
-            return
-        
-        # Получаем информацию о пользователе
-        target_user = get_user(phone)
-        if not target_user:
-            # Создаем пользователя если его нет
-            # Если имя передано, используем его, иначе дефолтное
-            initial_name = custom_name or f"Бригадир {phone}"
-            upsert_user(phone, initial_name, TZ)
-            target_user = get_user(phone)
-        elif custom_name:
-            # Если пользователь есть и передано новое имя - обновляем
-            upsert_user(phone, custom_name, TZ)
-            target_user = get_user(phone)
-        
-        username = target_user.get("full_name") or phone
-        
-        if add_brigadier(phone, username, username, user_id):
-            client.send_message(to=user_id, text=f"✅ Бригадир *{username}* ({phone}) добавлен.")
-        else:
-            client.send_message(to=user_id, text="❌ Этот пользователь уже является бригадиром.")
-        
-        clear_state(user_id)
-        u = get_user(user_id)
-        show_main_menu(client, user_id, u)
-        return
+    
+    elif data == "back_to_date":
+        # Возврат к выбору даты (для IT)
+        show_date_selection(client, user_id, prefix="it:date")
 
 # -----------------------------
 # Обработка текстовых сообщений
@@ -2730,7 +2703,7 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
             f"📊 Уже внесено: *{current_sum}* ч\n\n"
             f"Введите *количество часов*:"
         )
-        quick_replies = [{"id": "back_to_loc", "title": "🔙 Back"}]
+        quick_replies = [{"id": "back_to_loc", "title": "🔙 Назад"}]
         client.send_text_with_quick_replies(to=user_id, text=text, quick_replies=quick_replies)
         return
 
@@ -2798,9 +2771,8 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
             clear_state(user_id)
             return
         
-        # Обработка кнопки "Назад" (0)
-        # Обработка кнопки "Назад" (0) или Quick Reply
-        if message_text == "0" or message_text == "back_to_date":
+        # Обработка кнопки "Назад" (0) или Quick Reply "Back"
+        if message_text == "0" or message_text.lower() == "back" or message_text == "back_to_date" or message_text == "🔙 Back":
             # Return to date selection
             show_date_selection(client, user_id, prefix="it:date")
             return
@@ -2860,16 +2832,16 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
                     error_parts.append(f"• {act} ({loc}): *{h}* ч")
             
             error_parts.append(f"\n\nТекущая запись:")
-            error_parts.append(f"• Automatization of accounting (manhattan): *{hours}* ч")
+            error_parts.append(f"• Автоматизация учета (Манхэттен): *{hours}* ч")
             error_parts.append(f"\nИтого будет: *{existing_it_hours + hours}* ч (максимум 24)")
             
             client.send_message(to=user_id, text="\n".join(error_parts))
             return
         
         temp_report = {
-            "location": "manhattan",
+            "location": "Манхэттен",
             "loc_grp": "it",  # Специальная группа для IT
-            "activity": "Automatization of accounting",
+            "activity": "Автоматизация учета",
             "act_grp": "it",  # Специальная группа для IT
             "work_date": work_date,
             "hours": hours
@@ -2935,7 +2907,7 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
                     lines.append(f"{i}. {name}")
                 
                 text = "\n".join(lines)
-                quick_replies = [{"id": "cancel_location", "title": "🔙 Back"}]
+                quick_replies = [{"id": "cancel_location", "title": "🔙 Назад"}]
                 client.send_text_with_quick_replies(to=user_id, text=text, quick_replies=quick_replies)
                 return
         
