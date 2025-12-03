@@ -364,7 +364,7 @@ def export_report_to_sheet(report_id: int) -> bool:
                   datetime.now().isoformat(), datetime.now().isoformat()))
             con.commit()
         
-        logger.info(f"✅ Отчет {report_id} экспортирован в строку {row_number}")
+        logger.info(f"✅ Отчет {report_id} экспортирован в строку {row_number} (URL: {sheet_url})")
         return True
         
     except Exception as e:
