@@ -288,6 +288,15 @@ def get_or_create_monthly_sheet(year: int, month: int) -> Tuple[bool, str, str]:
     return create_monthly_sheet(year, month)
 
 
+def format_datetime(iso_str: str) -> str:
+    """Форматирует дату-время без микросекунд и T"""
+    try:
+        if not iso_str: return ""
+        dt = datetime.fromisoformat(iso_str)
+        return dt.strftime("%Y-%m-%d %H:%M:%S")
+    except:
+        return iso_str
+
 def export_report_to_sheet(report_id: int) -> bool:
     """
     Экспортирует один отчет в Google Sheets
@@ -333,7 +342,23 @@ def export_report_to_sheet(report_id: int) -> bool:
         
         # Подготавливаем данные для вставки
         values = [[
-            created_at,
+            format_datetime(created_at),
+            user_id,
+            reg_name or "",
+            location,
+            loc_grp,  # Добавил группу локации для наглядности, если нужно
+            activity,
+            act_grp,  # Добавил группу работы
+            work_date,
+            hours
+        ]]
+        # Важно: заголовки таблицы могут не совпадать с количеством полей. 
+        # В create_monthly_sheet заголовки: 'Дата создания', 'User ID', 'Имя', 'Локация', 'Вид работы', 'Дата работы', 'Часы'
+        # (7 колонок). А я подготовил 9.
+        # Давайте вернем как было (7 колонок), но с отформатированной датой.
+        
+        values = [[
+            format_datetime(created_at),
             user_id,
             reg_name or "",
             location,
@@ -715,7 +740,7 @@ def export_brigadier_report_to_sheet(report_id: int) -> bool:
             success, spreadsheet_id, sheet_url = get_or_create_brigadier_sheet(year, month)
             if not success: return False
             
-            values = [[ts, uid, uname, wtype, wdate, rows, field, bags, workers]]
+            values = [[format_datetime(ts), uid, uname, wtype, wdate, rows, field, bags, workers]]
             
             result = _sheets_service.spreadsheets().values().append(
                 spreadsheetId=spreadsheet_id,

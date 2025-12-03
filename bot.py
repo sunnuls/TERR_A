@@ -1218,7 +1218,7 @@ def show_date_selection(client: WhatsApp360Client, user_id: str, prefix: str):
         "id": "back:prev",
         "title": "🔙 Назад",
         "description": "Вернуться в меню"
-    })
+        })
     
     # Создаем секцию со списком дат
     sections = [
@@ -2330,7 +2330,7 @@ def handle_callback(client, btn: CallbackObject):
             lines.append(f"   ID: `{uid}`\n")
         text = "\n".join(lines)
         client.send_message(to=user_id, text=text)
-    
+
     elif data == "back_to_date":
         # Возврат к выбору даты (для IT)
         show_date_selection(client, user_id, prefix="it:date")
