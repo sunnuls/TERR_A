@@ -27,6 +27,10 @@ SERVER_PORT = int(os.getenv("SERVER_PORT", "8000"))
 ADMIN_IDS = os.getenv("ADMIN_IDS", "").split(",")
 ADMIN_IDS = [admin_id.strip() for admin_id in ADMIN_IDS if admin_id.strip()]
 
+# TIM (Первый зам директора по ИТ)
+TIM_IDS = os.getenv("TIM_IDS", "").split(",")
+TIM_IDS = [tim_id.strip() for tim_id in TIM_IDS if tim_id.strip()]
+
 # База данных
 DB_PATH = os.getenv("DB_PATH", "bot_data.db")
 

@@ -113,6 +113,9 @@ logging.info(f"🔧 ADMIN_IDS loaded: {ADMIN_IDS}")
 IT_IDS = set(_parse_admin_ids(os.getenv("IT_IDS", "")))
 logging.info(f"🔧 IT_IDS loaded: {IT_IDS}")
 
+TIM_IDS = set(_parse_admin_ids(os.getenv("TIM_IDS", "")))
+logging.info(f"🔧 TIM_IDS loaded: {TIM_IDS}")
+
 # GitHub Webhook секрет для автоматического обновления
 GITHUB_WEBHOOK_SECRET = os.getenv("GITHUB_WEBHOOK_SECRET", "")
 if GITHUB_WEBHOOK_SECRET:
@@ -931,19 +934,34 @@ def show_main_menu(wa: WhatsApp360Client, user_id: str, u: dict):
     
     # Проверяем роль пользователя
     it_user = is_it(user_id)
+    tim_user = is_tim(user_id)
     brigadier = is_brigadier(user_id)
     
     # Отладочная информация для IT пользователей
     if it_user:
         logging.info(f"🔧 IT пользователь обнаружен в show_main_menu: {user_id}, IT_IDS={IT_IDS}")
     
-    if it_user:
+    if tim_user:
+        # Для TIM роли: приветствие Первый зам директора по ИТ (имя)
+        # Кнопки: Партия следить, Статистика, Сменить имя
+        text = (
+            f"Первый зам директора по Информационным Технологиям\n"
+            f"*{name}*\n\n"
+            f"Выберите действие:"
+        )
+        buttons = [
+            Button(title="🇨🇳 Партия следить 🇨🇳", callback_data="tim:party"),
+            Button(title="📊 Статистика", callback_data="menu:stats"),
+            Button(title="✏️ Сменить имя", callback_data="menu:name"),
+        ]
+    elif it_user:
         # Для IT роли: приветствие mc.Lover (имя) и только кнопки star и статистика
         text = (
             f"mc.Lover (*{name}*)\n\n"
             f"*Команды:*\n"
             f"• `admin` - админское меню (с полным функционалом работяги + кнопка админ)\n"
             f"• `briq` - бригадирское меню\n"
+            f"• `tim` - меню TIM\n"
             f"• `rname` - сменить имя\n"
             f"• `sts` - статистика"
         )
@@ -1096,6 +1114,32 @@ def get_brigadier_stats(user_id: str, period: str) -> str:
             text.append(f"... и еще {len(details)-10}")
             
     return "\n".join(text)
+
+def _save_tim_report(client, user_id):
+    state = get_state(user_id)
+    rep = state["data"].get("tim_report")
+    if not rep:
+        client.send_message(to=user_id, text="❌ Ошибка данных.")
+        return
+
+    u = get_user(user_id)
+    reg_name = u.get("full_name") if u else user_id
+    
+    # Save to DB with group 'tim'
+    report_id = insert_report(
+        user_id=user_id,
+        reg_name=reg_name,
+        location=rep["location"],
+        loc_grp="tim",
+        activity=rep["activity"],
+        act_grp="tim",
+        work_date=rep["date"],
+        hours=rep["hours"]
+    )
+    
+    client.send_message(to=user_id, text=f"✅ Отчет сохранен (ID: {report_id})")
+    clear_state(user_id)
+    show_main_menu(client, user_id, u)
 
 # -----------------------------
 # Обработчики команд
@@ -1319,7 +1363,51 @@ def handle_callback(client, btn: CallbackObject):
             client.send_message(to=user_id, text="📊 *Статистика администратора*\n\nВыберите категорию:", buttons=buttons)
             return
 
-        # 2. Brigadier Logic
+        # 2. IT Logic: Personal Stats (All types including IT reports)
+        if is_it(user_id):
+            today = date.today()
+            start_date = date(today.year, today.month, 1).isoformat()
+            end_date = today.isoformat()
+            
+            # Fetch all reports for user (including IT)
+            with connect() as con, closing(con.cursor()) as c:
+                rows = c.execute("""
+                    SELECT work_date, location, activity, hours
+                    FROM reports 
+                    WHERE user_id=? AND work_date BETWEEN ? AND ?
+                    ORDER BY work_date DESC, created_at DESC
+                """, (user_id, start_date, end_date)).fetchall()
+            
+            month_name = calendar.month_name[today.month]
+            if not rows:
+                text = f"📊 *Моя статистика за {month_name}*\n\nЗаписей нет."
+            else:
+                parts = [f"📊 *Моя статистика за {month_name}*:"]
+                per_day = {}
+                total = 0
+                for d, loc, act, h in rows:
+                    per_day.setdefault(d, []).append((loc, act, h))
+                
+                for d in sorted(per_day.keys(), reverse=True):
+                    d_obj = date.fromisoformat(d)
+                    d_str = d_obj.strftime("%d.%m")
+                    parts.append(f"\n📅 *{d_str}*")
+                    for loc, act, h in per_day[d]:
+                        parts.append(f"• {loc} — {act}: *{h}* ч")
+                        total += h
+                parts.append(f"\nИтого за месяц: *{total}* ч")
+                text = "\n".join(parts)
+            
+            buttons = [
+                Button(title="✏️ Изменить", callback_data="menu:edit_list"),
+                Button(title="🗑 Удалить", callback_data="menu:delete_list"),
+                Button(title="🔙 Назад", callback_data="back:prev"),
+            ]
+            
+            client.send_message(to=user_id, text=text, buttons=buttons)
+            return
+
+        # 3. Brigadier Logic
         if is_brigadier(user_id):
             # Show brigadier stats for current month
             today = date.today()
@@ -1507,8 +1595,24 @@ def handle_callback(client, btn: CallbackObject):
              client.send_message(to=user_id, text="\n".join(lines))
              return
 
-        # Regular user edit list
-        rows = user_recent_24h_reports(user_id)
+        # Regular user or IT user edit list
+        # For IT users, we should also show IT reports.
+        # user_recent_24h_reports filters out IT/admin reports by default.
+        # We need to use a custom query for IT or update user_recent_24h_reports to accept an option.
+        # Let's write a custom query here to be safe and explicit.
+        
+        if is_it(user_id):
+             # IT user sees everything for last 24h
+             with connect() as con, closing(con.cursor()) as c:
+                rows = c.execute("""
+                    SELECT id, work_date, activity, location, hours, created_at
+                    FROM reports 
+                    WHERE user_id=? AND created_at >= datetime('now', '-1 day')
+                    ORDER BY created_at DESC
+                """, (user_id,)).fetchall()
+        else:
+             rows = user_recent_24h_reports(user_id)
+             
         if not rows:
             client.send_message(to=user_id, text="📝 За последние 24 часа записей нет.")
             return
@@ -1553,8 +1657,19 @@ def handle_callback(client, btn: CallbackObject):
              client.send_message(to=user_id, text="\n".join(lines))
              return
 
-        # Regular user delete list
-        rows = user_recent_24h_reports(user_id)
+        # Regular user or IT user delete list
+        if is_it(user_id):
+             # IT user sees everything for last 24h
+             with connect() as con, closing(con.cursor()) as c:
+                rows = c.execute("""
+                    SELECT id, work_date, activity, location, hours, created_at
+                    FROM reports 
+                    WHERE user_id=? AND created_at >= datetime('now', '-1 day')
+                    ORDER BY created_at DESC
+                """, (user_id,)).fetchall()
+        else:
+             rows = user_recent_24h_reports(user_id)
+
         if not rows:
             client.send_message(to=user_id, text="🗑 За последние 24 часа записей нет.")
             return
@@ -1574,6 +1689,129 @@ def handle_callback(client, btn: CallbackObject):
         set_state(user_id, "waiting_name")
         client.send_message(to=user_id, text="✏️ Введите *Фамилию Имя* для изменения (например: *Иванов Иван*):")
     
+    elif data == "tim:party":
+        if not is_tim(user_id):
+            client.send_message(to=user_id, text="❌ Нет прав")
+            return
+        # Start TIM flow: Date selection
+        show_date_selection(client, user_id, prefix="tim:date")
+
+    elif data.startswith("tim:date:"):
+        # TIM Date selected
+        selected_date = data.split(":")[2]
+        
+        # Check for saved template (last TIM report)
+        # We can use the last report for this user with a specific flag or just last report in 'tim' group
+        # But requirements say "if saved and confirmed". Let's check if we can reuse last values.
+        # For now, let's just start free input flow.
+        # But we need to support "Save and Confirm" template logic.
+        # We can look for the last report in 'tim' group to suggest default values.
+        
+        state = get_state(user_id)
+        
+        # Check if user has a "template" (last report)
+        last_report = None
+        with connect() as con, closing(con.cursor()) as c:
+            row = c.execute("""
+                SELECT activity, location, hours 
+                FROM reports 
+                WHERE user_id=? AND (location_grp='tim' OR activity_grp='tim')
+                ORDER BY created_at DESC LIMIT 1
+            """, (user_id,)).fetchone()
+            if row:
+                last_report = {"activity": row[0], "location": row[1], "hours": row[2]}
+        
+        # If template exists, ask if they want to use it
+        if last_report:
+            # Save potential template to state
+            set_state(user_id, "tim_template_confirm", {
+                "date": selected_date,
+                "template": last_report
+            }, save_to_history=False)
+            
+            d_str = date.fromisoformat(selected_date).strftime("%d.%m.%Y")
+            text = (
+                f"🇨🇳 *Партия следить*\n"
+                f"📅 Дата: *{d_str}*\n\n"
+                f"Использовать прошлые данные?\n"
+                f"• Работа: *{last_report['activity']}*\n"
+                f"• Место: *{last_report['location']}*\n"
+                f"• Часы: *{last_report['hours']}*\n"
+            )
+            buttons = [
+                Button(title="✅ Да, использовать", callback_data="tim:tmpl:yes"),
+                Button(title="✏️ Нет, новые", callback_data="tim:tmpl:no"),
+                Button(title="🔙 Назад", callback_data="back:prev")
+            ]
+            client.send_message(to=user_id, text=text, buttons=buttons)
+        else:
+            # No template, start manual flow
+            set_state(user_id, "tim_wait_activity", {"date": selected_date}, save_to_history=False)
+            client.send_message(to=user_id, text="🇨🇳 Введите *вид работы*:\n\n0. 🔙 Назад")
+
+    elif data == "tim:tmpl:yes":
+        # Use template
+        state = get_state(user_id)
+        tmpl = state["data"].get("template")
+        work_date = state["data"].get("date")
+        
+        if not tmpl or not work_date:
+            client.send_message(to=user_id, text="❌ Ошибка шаблона. Начните заново.")
+            return
+            
+        # Go to hours confirmation (or skip if we trust the template hours completely? 
+        # The prompt says "simplified filling of date and hours", implying loc/act are auto-filled.
+        # So we should probably let them edit hours if they want, or just confirm.
+        # "simplified filling of date and hours" -> maybe we just ask hours?
+        # Let's confirm hours.
+        
+        state["data"]["tim_report"] = {
+            "activity": tmpl["activity"],
+            "location": tmpl["location"],
+            "date": work_date
+        }
+        # Pre-fill hours from template but allow change? 
+        # Or just go to confirmation. Let's go to confirmation with template hours.
+        state["data"]["tim_report"]["hours"] = tmpl["hours"]
+        
+        set_state(user_id, "tim_confirm", state["data"], save_to_history=False)
+        
+        d_str = date.fromisoformat(work_date).strftime("%d.%m.%Y")
+        text = (
+            f"🇨🇳 *Подтверждение*\n\n"
+            f"📅 Дата: *{d_str}*\n"
+            f"Работа: *{tmpl['activity']}*\n"
+            f"Место: *{tmpl['location']}*\n"
+            f"Часы: *{tmpl['hours']}*\n\n"
+            f"Все верно?"
+        )
+        buttons = [
+            Button(title="✅ Подтвердить", callback_data="tim:save:simple"),
+            Button(title="✏️ Изменить часы", callback_data="tim:edit:hours"), # Option to edit hours
+            Button(title="🔄 Заново", callback_data="tim:party")
+        ]
+        client.send_message(to=user_id, text=text, buttons=buttons)
+
+    elif data == "tim:tmpl:no":
+        # Manual flow
+        state = get_state(user_id)
+        work_date = state["data"].get("date")
+        set_state(user_id, "tim_wait_activity", {"date": work_date}, save_to_history=False)
+        client.send_message(to=user_id, text="🇨🇳 Введите *вид работы*:\n\n0. 🔙 Назад")
+
+    elif data == "tim:edit:hours":
+        state = get_state(user_id)
+        set_state(user_id, "tim_wait_hours", state["data"], save_to_history=False)
+        client.send_message(to=user_id, text="🕒 Введите *количество часов*:\n\n0. 🔙 Назад")
+
+    elif data == "tim:save:simple":
+        # Save from template/confirmed state
+        _save_tim_report(client, user_id)
+
+    elif data == "tim:save:template":
+        # Save manual entry AND allow future templating (implicit by saving to DB)
+        _save_tim_report(client, user_id)
+
     elif data == "menu:admin":
         if not is_admin(user_id):
             client.send_message(to=user_id, text="❌ Нет прав")
@@ -2208,21 +2446,71 @@ def handle_callback(client, btn: CallbackObject):
     # -----------------------------
     
     elif data == "menu:brigadier":
-        # Показать меню выбора даты
+        # Показать меню выбора действия (вместо даты)
         if not is_brigadier(user_id):
             client.send_message(to=user_id, text="❌ У вас нет прав бригадира")
             return
         # Сохраняем текущее состояние в историю перед переходом
         save_to_history(user_id, "menu:root")
-        show_date_selection(client, user_id, prefix="brig:date")
+        
+        # Показываем меню бригадира (без даты пока)
+        buttons = [
+            Button(title="🥒 Кабачок", callback_data="brig:menu:zucchini"),
+            Button(title="🥔 Картошка", callback_data="brig:menu:potato"),
+            Button(title="📊 Статистика", callback_data="brig:stats"),
+        ]
+        # Добавляем кнопку сменить имя (в отдельный ряд или список)
+        # WhatsApp позволяет 3 кнопки в interactive message. Для 4-й нужен List или 2 сообщения.
+        # Отправим 3 кнопки, а "Сменить имя" и "Назад" отдельным сообщением или меню.
+        # Лучше использовать List Message для главного меню бригадира, там много опций.
+        
+        sections = [
+            {
+                "title": "Работа",
+                "rows": [
+                    {"id": "brig:menu:zucchini", "title": "🥒 Кабачок"},
+                    {"id": "brig:menu:potato", "title": "🥔 Картошка"}
+                ]
+            },
+            {
+                "title": "Управление",
+                "rows": [
+                    {"id": "brig:stats", "title": "📊 Статистика"},
+                    {"id": "menu:name", "title": "✏️ Сменить имя"}, # Re-use generic name change
+                    {"id": "back:prev", "title": "🔙 Назад"}
+                ]
+            }
+        ]
+        
+        client.send_list_message(
+            to=user_id,
+            header_text="👷 Меню бригадира",
+            body_text="Выберите действие:",
+            button_text="Меню",
+            sections=sections
+        )
+
+    elif data == "brig:menu:zucchini":
+        # Выбор даты для кабачков
+        show_date_selection(client, user_id, prefix="brig:date:zucchini")
+        
+    elif data == "brig:menu:potato":
+        # Выбор даты для картошки
+        show_date_selection(client, user_id, prefix="brig:date:potato")
     
-    elif data.startswith("brig:date:"):
-        # Дата выбрана (через callback, если бы мы использовали кнопки)
-        selected_date = data.split(":")[2]
-        # Сохраняем текущее состояние в историю перед переходом
-        save_to_history(user_id, "menu:brigadier")
-        set_state(user_id, "brig_menu_selected", {"date": selected_date}, save_to_history=False)
-        show_brigadier_menu(client, user_id, selected_date)
+    elif data.startswith("brig:date:zucchini:"):
+        selected_date = data.split(":")[3]
+        # Start zucchini flow
+        set_state(user_id, "brig_zucchini_rows", {"work_type": "Кабачок", "date": selected_date}, save_to_history=False)
+        buttons = [Button(title="🔙 Назад", callback_data="menu:brigadier")] # Back to brig menu
+        client.send_message(to=user_id, text=f"🥒 *Кабачок* ({selected_date})\n\nВведите *количество рядов*:", buttons=buttons)
+
+    elif data.startswith("brig:date:potato:"):
+        selected_date = data.split(":")[3]
+        # Start potato flow
+        set_state(user_id, "brig_potato_rows", {"work_type": "Картошка", "date": selected_date}, save_to_history=False)
+        buttons = [Button(title="🔙 Назад", callback_data="menu:brigadier")]
+        client.send_message(to=user_id, text=f"🥔 *Картошка* ({selected_date})\n\nВведите *количество выкопанных рядов*:", buttons=buttons)
     
     elif data == "brig:stats":
         show_brigadier_stats_menu(client, user_id)
@@ -2371,23 +2659,51 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
             ]
             client.send_message(to=user_id, text="⚙️ *Админ-меню*\n\nВыберите действие:", buttons=buttons)
             return
+        elif norm_text == "expo":
+            # IT command to trigger export
+            client.send_message(to=user_id, text="⏳ Запуск экспорта отчетов...")
+            try:
+                count, message = export_reports_to_sheets()
+                text = f"✅ {message}" if count > 0 else f"ℹ️ {message}"
+                
+                # Экспорт бригадиров
+                brig_count, brig_msg = export_brigadier_reports()
+                if brig_count > 0:
+                    text += f"\n✅ {brig_msg}"
+                elif "Ошибка" in brig_msg:
+                    text += f"\n❌ {brig_msg}"
+                
+                created, sheet_msg = check_and_create_next_month_sheet()
+                if created:
+                    text += f"\n\n📅 {sheet_msg}"
+            except Exception as e:
+                logging.error(f"Export error: {e}")
+                text = f"❌ Ошибка экспорта: {str(e)}"
+            
+            client.send_message(to=user_id, text=text)
+            return
         elif norm_text == "briq":
             # Сохраняем текущее состояние в историю перед переходом
             save_to_history(user_id, "menu:more")
-            # Показываем бригадирское меню
-            show_date_selection(client, user_id, prefix="brig:date")
+            # Показываем бригадирское меню (НОВОЕ)
+            # Вызываем callback handler для menu:brigadier
+            data_obj = type('obj', (object,), {'data': 'menu:brigadier'})()
+            btn_obj = type('obj', (object,), {'from_user': msg.from_user, 'data': 'menu:brigadier'})()
+            handle_callback(client, btn_obj)
             return
         elif norm_text == "rname":
             set_state(user_id, "waiting_name", save_to_history=False)
             client.send_message(to=user_id, text="Введите *Фамилию Имя* для изменения:")
             return
         elif norm_text == "sts":
-            # Сохраняем текущее состояние в историю перед переходом
+            # Для IT sts работает как админская статистика
             save_to_history(user_id, "menu:more")
-            # Показываем статистику
-            data_obj = type('obj', (object,), {'data': 'menu:stats'})()
-            btn_obj = type('obj', (object,), {'from_user': msg.from_user, 'data': 'menu:stats'})()
-            handle_callback(client, btn_obj)
+            buttons = [
+                Button(title="🚜 Terra (Все)", callback_data="stats:admin:terra"),
+                Button(title="👷 Бригадиры (Все)", callback_data="stats:admin:brig"),
+                Button(title="🔙 Назад", callback_data="back:prev"),
+            ]
+            client.send_message(to=user_id, text="📊 *Статистика (IT/Admin)*\n\nВыберите категорию:", buttons=buttons)
             return
 
     # Команда для проверки IT роли и показа меню (обрабатывается ДО команды menu)
@@ -2554,6 +2870,70 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
         
         u = get_user(user_id)
         show_main_menu(client, user_id, u)
+        return
+
+    if current_state == "tim_wait_activity":
+        if message_text == "0":
+            show_date_selection(client, user_id, prefix="tim:date")
+            return
+        
+        state["data"]["tim_report"] = {"activity": message_text}
+        # Pass date along
+        state["data"]["tim_report"]["date"] = state["data"]["date"]
+        
+        set_state(user_id, "tim_wait_location", state["data"], save_to_history=False)
+        client.send_message(to=user_id, text="📍 Введите *локацию*:\n\n0. 🔙 Назад")
+        return
+
+    if current_state == "tim_wait_location":
+        if message_text == "0":
+            # Back to activity
+            set_state(user_id, "tim_wait_activity", state["data"], save_to_history=False)
+            client.send_message(to=user_id, text="🇨🇳 Введите *вид работы*:\n\n0. 🔙 Назад")
+            return
+            
+        state["data"]["tim_report"]["location"] = message_text
+        set_state(user_id, "tim_wait_hours", state["data"], save_to_history=False)
+        client.send_message(to=user_id, text="🕒 Введите *количество часов*:\n\n0. 🔙 Назад")
+        return
+
+    if current_state == "tim_wait_hours":
+        if message_text == "0":
+            # Back to location
+            set_state(user_id, "tim_wait_location", state["data"], save_to_history=False)
+            client.send_message(to=user_id, text="📍 Введите *локацию*:\n\n0. 🔙 Назад")
+            return
+            
+        if not message_text.isdigit():
+            client.send_message(to=user_id, text="❌ Введите число.")
+            return
+            
+        hours = int(message_text)
+        if not (1 <= hours <= 24):
+            client.send_message(to=user_id, text="❌ От 1 до 24.")
+            return
+            
+        state["data"]["tim_report"]["hours"] = hours
+        
+        # Confirmation
+        rep = state["data"]["tim_report"]
+        d_str = date.fromisoformat(rep["date"]).strftime("%d.%m.%Y")
+        
+        text = (
+            f"🇨🇳 *Проверка данных*\n\n"
+            f"📅 Дата: *{d_str}*\n"
+            f"Работа: *{rep['activity']}*\n"
+            f"Место: *{rep['location']}*\n"
+            f"Часы: *{hours}*\n"
+        )
+        
+        buttons = [
+            Button(title="✅ Подтвердить", callback_data="tim:save:simple"),
+            Button(title="💾 Сохранить и подтв.", callback_data="tim:save:template"),
+            Button(title="🔄 Заново", callback_data="tim:party")
+        ]
+        client.send_message(to=user_id, text=text, buttons=buttons)
+        set_state(user_id, "tim_confirm", state["data"], save_to_history=False)
         return
 
     if current_state == "waiting_activity_selection":
