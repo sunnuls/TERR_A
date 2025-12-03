@@ -1385,17 +1385,9 @@ def handle_callback(client, btn: CallbackObject):
     elif data == "menu:stats":
         # Сохраняем текущее состояние в историю перед переходом
         save_to_history(user_id, "menu:root")
-        # 1. Admin Logic
-        if is_admin(user_id):
-            buttons = [
-                Button(title="🚜 Terra (Все)", callback_data="stats:admin:terra"),
-                Button(title="👷 Бригадиры (Все)", callback_data="stats:admin:brig"),
-                Button(title="🔙 Назад", callback_data="back:prev"),
-            ]
-            client.send_message(to=user_id, text="📊 *Статистика администратора*\n\nВыберите категорию:", buttons=buttons)
-            return
-
-        # 2. IT Logic: Personal Stats (All types including IT reports)
+        
+        # Приоритет: если пользователь IT, показываем ЛИЧНУЮ статистику (все типы)
+        # Даже если он админ. Админскую он может посмотреть через sts или меню админа.
         if is_it(user_id):
             today = date.today()
             start_date = date(today.year, today.month, 1).isoformat()
@@ -1437,6 +1429,16 @@ def handle_callback(client, btn: CallbackObject):
             ]
             
             client.send_message(to=user_id, text=text, buttons=buttons)
+            return
+
+        # 1. Admin Logic (если не IT)
+        if is_admin(user_id):
+            buttons = [
+                Button(title="🚜 Terra (Все)", callback_data="stats:admin:terra"),
+                Button(title="👷 Бригадиры (Все)", callback_data="stats:admin:brig"),
+                Button(title="🔙 Назад", callback_data="back:prev"),
+            ]
+            client.send_message(to=user_id, text="📊 *Статистика администратора*\n\nВыберите категорию:", buttons=buttons)
             return
 
         # 3. Brigadier Logic
