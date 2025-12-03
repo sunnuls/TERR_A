@@ -116,6 +116,38 @@ logging.info(f"🔧 IT_IDS loaded: {IT_IDS}")
 TIM_IDS = set(_parse_admin_ids(os.getenv("TIM_IDS", "")))
 logging.info(f"🔧 TIM_IDS loaded: {TIM_IDS}")
 
+# -----------------------------
+# Роли и права доступа (перемещено вверх)
+# -----------------------------
+
+def is_admin(user_id: str) -> bool:
+    norm = _normalize_phone(user_id)
+    return (user_id in ADMIN_IDS) or (norm and norm in ADMIN_IDS)
+
+def is_it(user_id: str) -> bool:
+    norm = _normalize_phone(user_id)
+    return (user_id in IT_IDS) or (norm and norm in IT_IDS)
+
+def is_tim(user_id: str) -> bool:
+    """Проверка на роль TIM (Первый зам директора по ИТ)"""
+    norm = _normalize_phone(user_id)
+    return (user_id in TIM_IDS) or (norm and norm in TIM_IDS)
+
+def is_brigadier(user_id: str) -> bool:
+    # Check in DB
+    with connect() as con, closing(con.cursor()) as c:
+        # Проверяем наличие в таблице бригадиров
+        exists = c.execute("SELECT 1 FROM brigadiers WHERE user_id=?", (user_id,)).fetchone()
+        if exists:
+            return True
+        # Проверяем нормализованный номер
+        norm = _normalize_phone(user_id)
+        if norm and norm != user_id:
+            exists = c.execute("SELECT 1 FROM brigadiers WHERE user_id=?", (norm,)).fetchone()
+            if exists:
+                return True
+    return False
+
 # GitHub Webhook секрет для автоматического обновления
 GITHUB_WEBHOOK_SECRET = os.getenv("GITHUB_WEBHOOK_SECRET", "")
 if GITHUB_WEBHOOK_SECRET:
