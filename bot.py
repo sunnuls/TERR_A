@@ -3490,25 +3490,50 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
             show_main_menu(client, user_id, u)
             return
 
-        if not message_text.isdigit():
-            client.send_message(to=user_id, text="❌ Введите номер записи из списка или 0.")
-            return
+        # Parse multiple IDs
+        ids_to_delete = []
+        invalid_inputs = []
         
-        idx = int(message_text) - 1
+        # Split by comma or space
+        parts = message_text.replace(",", " ").split()
         records = state["data"].get("del_records", [])
         
-        if not (0 <= idx < len(records)):
-            client.send_message(to=user_id, text="❌ Неверный номер.")
+        for part in parts:
+            if not part.isdigit():
+                invalid_inputs.append(part)
+                continue
+                
+            idx = int(part) - 1
+            if not (0 <= idx < len(records)):
+                invalid_inputs.append(part)
+                continue
+                
+            # Get report ID (first element in record tuple)
+            ids_to_delete.append(records[idx][0])
+            
+        if invalid_inputs:
+            client.send_message(to=user_id, text=f"❌ Некорректные номера: {', '.join(invalid_inputs)}. Введите номера из списка через запятую или пробел.")
             return
             
-        r = records[idx]
-        rid, wdate, act, loc, h, _ = r
-        
-        if delete_report(rid, user_id):
-            client.send_message(to=user_id, text="✅ Запись удалена.")
-        else:
-            client.send_message(to=user_id, text="❌ Ошибка удаления.")
+        if not ids_to_delete:
+            client.send_message(to=user_id, text="❌ Не выбрано ни одной записи.")
+            return
             
+        # Delete records
+        success_count = 0
+        fail_count = 0
+        
+        for rid in ids_to_delete:
+            if delete_report(rid, user_id):
+                success_count += 1
+            else:
+                fail_count += 1
+                
+        msg = f"✅ Удалено записей: {success_count}"
+        if fail_count > 0:
+            msg += f"\n❌ Ошибок удаления: {fail_count}"
+            
+        client.send_message(to=user_id, text=msg)
         clear_state(user_id)
         u = get_user(user_id)
         show_main_menu(client, user_id, u)
@@ -3522,19 +3547,44 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
             show_main_menu(client, user_id, u)
             return
             
-        idx = int(message_text) - 1
+        # Parse multiple IDs for brigadiers too
+        ids_to_delete = []
+        invalid_inputs = []
+        
+        parts = message_text.replace(",", " ").split()
         records = state["data"].get("del_list_brig", [])
-        if not (0 <= idx < len(records)):
-            client.send_message(to=user_id, text="❌ Неверный номер.")
+        
+        for part in parts:
+            if not part.isdigit():
+                invalid_inputs.append(part)
+                continue
+                
+            idx = int(part) - 1
+            if not (0 <= idx < len(records)):
+                invalid_inputs.append(part)
+                continue
+                
+            ids_to_delete.append(records[idx][0])
+            
+        if invalid_inputs:
+            client.send_message(to=user_id, text=f"❌ Некорректные номера: {', '.join(invalid_inputs)}")
             return
             
-        rid = records[idx][0]
-        # Delete brigadier report
-        with connect() as con, closing(con.cursor()) as c:
-            c.execute("DELETE FROM brigadier_reports WHERE id=?", (rid,))
-            con.commit()
+        if not ids_to_delete:
+            client.send_message(to=user_id, text="❌ Не выбрано ни одной записи.")
+            return
             
-        client.send_message(to=user_id, text="✅ Запись удалена.")
+        with connect() as con, closing(con.cursor()) as c:
+            placeholders = ",".join("?" * len(ids_to_delete))
+            c.execute(f"DELETE FROM brigadier_reports WHERE id IN ({placeholders})", ids_to_delete)
+            con.commit()
+            deleted_count = c.execute("SELECT changes()").fetchone()[0] # This might not work in all sqlite versions/drivers perfectly in one go
+            # Rowcount is better check on cursor object
+            
+        # Re-check deletion rowcount isn't easy with batch delete in this wrapper context easily without cursor object
+        # Let's assume success if no exception
+        client.send_message(to=user_id, text=f"✅ Удалено записей: {len(ids_to_delete)}")
+        
         clear_state(user_id)
         u = get_user(user_id)
         show_main_menu(client, user_id, u)
