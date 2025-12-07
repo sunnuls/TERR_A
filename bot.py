@@ -175,23 +175,48 @@ AUTO_EXPORT_CRON = os.getenv("AUTO_EXPORT_CRON", "0 9 * * 1")
 # Константы (дефолтные справочники)
 # -----------------------------
 
+# Тракторы
+TRACTORS = [
+    "JD7(с)", "JD7(н)", "GD8", "GD6", "Оранжевый", "Погрузчик", "Комбайн", "Прочее"
+]
+
+# Работы для трактора
+ACTIVITIES_TRACTOR = [
+    "Сев", "Опрыскивание", "МК", "Боронование", "Уборка", 
+    "Дискование", "Пахота", "Чизелевание", "Навоз", "Прочее"
+]
+
+# Работы ручные
+ACTIVITIES_MANUAL = [
+    "Лесополоса", "Прополка", "Сев", "Уборка", "Прочее"
+]
+
+# Культуры
+CROPS = [
+    "Кабачок", "Картошка", "Подсолнечник", "Кукуруза", "Пшеница", "Горох", "Прочее"
+]
+
+# Культуры для КамАЗ (те же + Навоз если надо, но Навоз есть в работах трактора.
+# Для КамАЗа "Навоз" может быть как груз. Добавим "Навоз" в список культур для КамАЗа отдельно или используем общий)
+CROPS_KAMAZ = CROPS + ["Навоз"]
+
+# Места погрузки для КамАЗа (поля + склад + прочее)
+# Мы будем формировать их динамически из списка locations + "Склад"
+
 DEFAULT_FIELDS = [
     "Северное","Фазенда","5 га","58 га","Фермерское","Сад",
     "Чеки №1","Чеки №2","Чеки №3","Рогачи (б)","Рогачи(М)",
     "Владимирова Аренда","МТФ",
 ]
 
-DEFAULT_TECH = [
-    "пахота","чизелевание","дискование","культивация сплошная",
-    "культивация междурядная","опрыскивание","комбайн уборка","сев","барнование",
-]
+# Оставляем старые списки для совместимости если где-то используются, 
+# но основные теперь выше.
+DEFAULT_TECH = ACTIVITIES_TRACTOR
+DEFAULT_HAND = ACTIVITIES_MANUAL
 
-DEFAULT_HAND = [
-    "прополка","сбор","полив","монтаж","ремонт",
-]
-
-GROUP_TECH = "техника"
+GROUP_TECH = "техника" # Трактор
 GROUP_HAND = "ручная"
+GROUP_KAMAZ = "камаз" # Новый тип
 GROUP_FIELDS = "поля"
 GROUP_WARE = "склад"
 
@@ -436,12 +461,23 @@ def init_db():
         def table_cols(table: str):
             return {r[1] for r in c.execute(f"PRAGMA table_info({table})").fetchall()}
 
-        # Миграция для brigadier_reports
+        # Миграция для brigadier_reports (shift)
         br_cols = table_cols("brigadier_reports")
+        if "shift" not in br_cols:
+            c.execute("ALTER TABLE brigadier_reports ADD COLUMN shift TEXT")
+
         if "work_date" not in br_cols:
             c.execute("ALTER TABLE brigadier_reports ADD COLUMN work_date TEXT")
-            # Заполняем старые записи текущей датой (или датой из timestamp)
             c.execute("UPDATE brigadier_reports SET work_date=substr(timestamp, 1, 10) WHERE work_date IS NULL")
+
+        # Миграция для reports (machinery, crop, trips)
+        r_cols = table_cols("reports")
+        if "machinery" not in r_cols:
+            c.execute("ALTER TABLE reports ADD COLUMN machinery TEXT")
+        if "crop" not in r_cols:
+            c.execute("ALTER TABLE reports ADD COLUMN crop TEXT")
+        if "trips" not in r_cols:
+            c.execute("ALTER TABLE reports ADD COLUMN trips INTEGER")
 
         lcols = table_cols("locations")
         if "grp" not in lcols:
@@ -974,8 +1010,7 @@ def show_main_menu(wa: WhatsApp360Client, user_id: str, u: dict):
         logging.info(f"🔧 IT пользователь обнаружен в show_main_menu: {user_id}, IT_IDS={IT_IDS}")
     
     if tim_user:
-        # Для TIM роли: приветствие Первый зам директора по ИТ (имя)
-        # Кнопки: Партия следить, Статистика, Сменить имя
+        # Для TIM роли
         text = (
             f"Первый зам директора по Информационным Технологиям\n"
             f"*{name}*\n\n"
@@ -987,14 +1022,14 @@ def show_main_menu(wa: WhatsApp360Client, user_id: str, u: dict):
             Button(title="✏️ Сменить имя", callback_data="menu:name"),
         ]
     elif it_user:
-        # Для IT роли: приветствие mc.Lover (имя) и только кнопки star и статистика
+        # Для IT роли
         text = (
             f"mc.Lover (*{name}*)\n\n"
             f"*Команды:*\n"
-            f"• `admin` - админское меню (с полным функционалом работяги + кнопка админ)\n"
+            f"• `admin` - админское меню\n"
             f"• `briq` - бригадирское меню\n"
             f"• `tim` - меню TIM\n"
-            f"• `rname` - сменить имя\n"
+            f"• `rb1` - меню работяги\n"
             f"• `sts` - статистика"
         )
         buttons = [
@@ -1003,69 +1038,40 @@ def show_main_menu(wa: WhatsApp360Client, user_id: str, u: dict):
         ]
     elif brigadier:
         buttons = [
-            Button(title="👷 Работа (Бригадир)", callback_data="menu:brigadier"),
+            Button(title="👷 ОБ (Отчет)", callback_data="menu:brigadier"), # ОБ вместо ОТД
             Button(title="📊 Статистика", callback_data="menu:stats"),
-            Button(title="Ещё...", callback_data="menu:more"),
+            Button(title="⚙️ Настройки", callback_data="menu:settings"), # Вместо Ещё
         ]
         text = f"👤 *{name}*\n\nВыберите действие: 🌻"
     else:
+        # Обычный работяга
         buttons = [
             Button(title="🚜 ОТД", callback_data="menu:work"),
             Button(title="📊 Статистика", callback_data="menu:stats"),
-            Button(title="Ещё...", callback_data="menu:more"),
+            Button(title="⚙️ Настройки", callback_data="menu:settings"), # Вместо Ещё
         ]
         text = f"👤 *{name}*\n\nВыберите действие: 🌻"
     
-    # Для админов добавляем подсказку по скрытым командам
+    # Для админов добавляем подсказку
     if is_admin(user_id):
         text += "\n\n🛠 *Команды админа:*\n`/бриг` - Управление бригадирами\n`00` - В главное меню\n`sts` - Статистика\n`admin` - Админ панель"
         
     wa.send_message(to=user_id, text=text, buttons=buttons)
 
-def show_more_menu(wa: WhatsApp360Client, user_id: str):
-    it_user = is_it(user_id)
-    admin = is_admin(user_id)
-    buttons = []
-    
-    if it_user:
-        # Для IT роли: команды admin, briq, rname, sts
-        text = (
-            "1. *admin* - выдает админское меню (и имею полностью как обычно меню работяги с ОТД и т.д., только с кнопкой админ)\n"
-            "2. *briq* - выдает бригадирское меню\n"
-            "3. *rname* - сменить имя\n"
-            "4. *sts* - статистика"
-        )
-        buttons.append(Button(title="🔙 Назад", callback_data="back:prev"))
-    elif admin:
-        # Для админа: Админ, Имя, Назад
-        buttons.append(Button(title="⚙️ Админ", callback_data="menu:admin"))
-        buttons.append(Button(title="✏️ Имя", callback_data="menu:name"))
-        buttons.append(Button(title="🔙 Назад", callback_data="back:prev"))
-        text = "Выберите действие:"
-    else:
-        # Для обычного юзера: Перепись, Имя, Назад
-        buttons.append(Button(title="📝 Перепись", callback_data="menu:edit"))
-        buttons.append(Button(title="✏️ Имя", callback_data="menu:name"))
-        buttons.append(Button(title="🔙 Назад", callback_data="back:prev"))
-        text = "Выберите действие:"
-    
-    wa.send_message(to=user_id, text=text, buttons=buttons)
-
-def show_brigadier_menu(wa: WhatsApp360Client, user_id: str, selected_date: str):
-    """
-    Показывает меню бригадира для выбранной даты
-    """
-    d = date.fromisoformat(selected_date)
-    date_str = d.strftime("%d.%m.%Y")
-    
+def show_settings_menu(wa: WhatsApp360Client, user_id: str):
+    """Меню настроек (бывшее Ещё)"""
     buttons = [
-        Button(title="🥒 Кабачок", callback_data="brig:zucchini"),
-        Button(title="🥔 Картошка", callback_data="brig:potato"),
-        Button(title="📊 Статистика", callback_data="brig:stats"),
+        Button(title="✏️ Сменить имя", callback_data="menu:name"),
         Button(title="🔙 Назад", callback_data="back:prev"),
     ]
-    
-    wa.send_message(to=user_id, text=f"👷 *Меню бригадира*\n📅 Дата: *{date_str}*\n\nВыберите действие:", buttons=buttons)
+    wa.send_message(to=user_id, text="⚙️ *Настройки*\n\nВы можете изменить свое имя.", buttons=buttons)
+
+def show_brigadier_menu(wa: WhatsApp360Client, user_id: str):
+    """
+    Главное меню бригадира (после нажатия ОБ)
+    """
+    # Сразу спрашиваем дату, как в ОТД
+    show_date_selection(wa, user_id, prefix="brig:date")
 
 def show_brigadier_stats_menu(wa: WhatsApp360Client, user_id: str):
     buttons = [
@@ -1365,10 +1371,10 @@ def handle_callback(client, btn: CallbackObject):
         clear_state(user_id)
         show_main_menu(client, user_id, u)
     
-    elif data == "menu:more":
+    elif data == "menu:settings":
         # Сохраняем текущее состояние в историю перед переходом
         save_to_history(user_id, "menu:root")
-        show_more_menu(client, user_id)
+        show_settings_menu(client, user_id)
     
     elif data == "menu:work":
         # Сохраняем текущее состояние в историю перед переходом
@@ -1379,7 +1385,7 @@ def handle_callback(client, btn: CallbackObject):
             client.send_message(to=user_id, text="Введите *Фамилию Имя* для регистрации.")
             return
         
-        # New flow: Start with date selection
+        # ОТД - Сразу выбор даты
         show_date_selection(client, user_id, prefix="work:date")
     
     elif data == "menu:stats":
@@ -1653,9 +1659,10 @@ def handle_callback(client, btn: CallbackObject):
         
         state = get_state(user_id)
         state["data"]["edit_records"] = rows
-        set_state(user_id, "waiting_record_selection", state["data"])
+        # Change state to new multi-select state
+        set_state(user_id, "waiting_edit_selection_multi", state["data"])
         
-        lines = ["Выберите *запись* для изменения (отправьте номер):"]
+        lines = ["Выберите *записи* для изменения (через запятую или пробел):"]
         for i, r in enumerate(rows, 1):
             rid, wdate, act, loc, h, _ = r
             lines.append(f"{i}. {wdate} | {act} ({loc}) — *{h}ч*")
@@ -1942,45 +1949,63 @@ def handle_callback(client, btn: CallbackObject):
         d_str = date.fromisoformat(selected_date).strftime("%d.%m.%Y")
         client.send_message(to=user_id, text=f"📅 Дата: *{d_str}*\n\nВыберите *тип работы*:", buttons=buttons)
 
-    elif data.startswith("work:grp:"):
-        kind = data.split(":")[2]
-        grp_name = GROUP_TECH if kind == "tech" else GROUP_HAND
-        
-        # Сохраняем текущее состояние в историю перед переходом
-        # Определяем callback для возврата - это экран выбора типа работы после выбора даты
+    elif data.startswith("work:type:"):
+        wtype = data.split(":")[2]
         state = get_state(user_id)
+        # Preserve date
         work_date = state["data"].get("date")
-        if work_date:
-            # Сохраняем с callback, который вернет к выбору типа работы
-            save_to_history(user_id, f"work:date:{work_date}")
-        else:
-            save_to_history(user_id, "menu:work")
+        state["data"]["work_type"] = wtype
         
-        # Preserve the date from the previous state
-        # If date is missing (should not happen in new flow), default to today
-        if not work_date:
-            work_date = date.today().isoformat()
+        if wtype == "tractor":
+            # Трактор: выбор техники
+            set_state(user_id, "work_tractor_machinery", state["data"], save_to_history=False)
             
-        state["data"]["work"] = {"grp": grp_name, "date": work_date}
-        
-        activities = list_activities_with_id(grp_name)
-        state["data"]["acts"] = activities
-        state["data"]["acts_kind"] = kind
-        
-        set_state(user_id, "waiting_activity_selection", state["data"], save_to_history=False)
-        
-        if not activities:
-            client.send_message(to=user_id, text="❌ В этой категории нет работ.")
-            return
+            lines = ["Выберите *трактор* (отправьте номер):"]
+            for i, m in enumerate(TRACTORS, 1):
+                lines.append(f"{i}. {m}")
+            
+            client.send_message(to=user_id, text="\n".join(lines) + "\n\n0. 🔙 Назад")
+            
+        elif wtype == "kamaz":
+            # КамАЗ: выбор культуры
+            set_state(user_id, "work_kamaz_crop", state["data"], save_to_history=False)
+            
+            lines = ["Выберите *культуру* (отправьте номер):"]
+            for i, c in enumerate(CROPS_KAMAZ, 1):
+                lines.append(f"{i}. {c}")
+                
+            client.send_message(to=user_id, text="\n".join(lines) + "\n\n0. 🔙 Назад")
+            
+        elif wtype == "manual":
+            # Ручная: выбор вида работы
+            set_state(user_id, "work_manual_activity", state["data"], save_to_history=False)
+            
+            lines = ["Выберите *вид работы* (отправьте номер):"]
+            for i, a in enumerate(ACTIVITIES_MANUAL, 1):
+                lines.append(f"{i}. {a}")
+                
+            client.send_message(to=user_id, text="\n".join(lines) + "\n\n0. 🔙 Назад")
 
-        lines = ["Выберите *вид работы* (отправьте номер или название):"]
-        for i, (aid, name) in enumerate(activities, 1):
-            lines.append(f"{i}. {name}")
-        lines.append(f"{len(activities) + 1}. 📝 Прочее")
+    elif data.startswith("brig:shift:"):
+        shift_code = data.split(":")[2]
+        shift_name = "Утренняя" if shift_code == "morning" else "Вечерняя"
         
-        text = "\n".join(lines)
-        quick_replies = [{"id": "cancel_activity", "title": "🔙 Back"}]
-        client.send_text_with_quick_replies(to=user_id, text=text, quick_replies=quick_replies)
+        state = get_state(user_id)
+        state["data"]["shift"] = shift_name
+        
+        # Next: Crop selection (Кабачок, Картошка, прочее)
+        set_state(user_id, "brig_crop", state["data"], save_to_history=False)
+        
+        # Build list from CROPS but prioritizing Zucchini/Potato if they are in there, or custom list
+        # Prompt says: "Кабачок, Картошка, прочее (списком)"
+        # Let's use a specific list for Brigadier
+        BRIG_CROPS = ["Кабачок", "Картошка", "Прочее"]
+        
+        lines = ["Выберите *культуру* (отправьте номер):"]
+        for i, c in enumerate(BRIG_CROPS, 1):
+            lines.append(f"{i}. {c}")
+            
+        client.send_message(to=user_id, text="\n".join(lines) + "\n\n0. 🔙 Назад")
     
     elif data.startswith("work:locgrp:"):
         lg = data.split(":")[2]
@@ -2776,12 +2801,12 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
     if norm_text == "rb1":
         if is_it(user_id):
             u = get_user(user_id)
-            # Принудительно показываем меню работяги (ОТД, Статистика, Еще)
+            # Принудительно показываем меню работяги (ОТД, Статистика, Настройки)
             name = (u or {}).get("full_name") or "—"
             buttons = [
                 Button(title="🚜 ОТД", callback_data="menu:work"),
                 Button(title="📊 Статистика", callback_data="menu:stats"),
-                Button(title="Ещё...", callback_data="menu:more"),
+                Button(title="⚙️ Настройки", callback_data="menu:settings"),
             ]
             text = f"👤 *{name}*\n\nВыберите действие: 🌻"
             client.send_message(to=user_id, text=text, buttons=buttons)
@@ -3202,20 +3227,29 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
         next_prefix = state["data"].get("next_prefix")
         
         if next_prefix == "work:date":
-            # Worker flow
-            set_state(user_id, "pick_work_group", {"date": selected_date})
+            # Worker flow: Date selected -> Choose Work Type (Tractor / KamAZ / Manual)
+            # Сохраняем дату в состоянии
+            set_state(user_id, "work_pick_type", {"date": selected_date})
+            
             buttons = [
-                Button(title="Техника", callback_data="work:grp:tech"),
-                Button(title="Ручная", callback_data="work:grp:hand"),
-                Button(title="🔙 Назад", callback_data="back:prev"),
+                Button(title="🚜 Трактор", callback_data="work:type:tractor"),
+                Button(title="🚛 КамАЗ", callback_data="work:type:kamaz"),
+                Button(title="✋ Ручная", callback_data="work:type:manual"),
             ]
             d_str = date.fromisoformat(selected_date).strftime("%d.%m.%Y")
             client.send_message(to=user_id, text=f"📅 Дата: *{d_str}*\n\nВыберите *тип работы*:", buttons=buttons)
             
         elif next_prefix == "brig:date":
-            # Brigadier flow
-            set_state(user_id, "brig_menu_selected", {"date": selected_date})
-            show_brigadier_menu(client, user_id, selected_date)
+            # Brigadier flow: Date selected -> Choose Shift
+            set_state(user_id, "brig_pick_shift", {"date": selected_date})
+            
+            buttons = [
+                Button(title="☀️ Утренняя", callback_data="brig:shift:morning"),
+                Button(title="🌙 Вечерняя", callback_data="brig:shift:evening"),
+                Button(title="🔙 Назад", callback_data="menu:brigadier")
+            ]
+            d_str = date.fromisoformat(selected_date).strftime("%d.%m.%Y")
+            client.send_message(to=user_id, text=f"📅 Дата: *{d_str}*\n\nВыберите *смену*:", buttons=buttons)
             
         elif next_prefix == "it:date":
             # IT flow: Date selected, now ask for hours
@@ -3556,6 +3590,113 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
         u = get_user(user_id)
         show_main_menu(client, user_id, u)
         return
+
+    if current_state == "waiting_edit_selection_multi":
+        if message_text == "0":
+            client.send_message(to=user_id, text="🔄 Отмена редактирования")
+            clear_state(user_id)
+            u = get_user(user_id)
+            show_main_menu(client, user_id, u)
+            return
+
+        # Parse multiple IDs
+        ids_to_edit = []
+        invalid_inputs = []
+        
+        parts = message_text.replace(",", " ").split()
+        records = state["data"].get("edit_records", [])
+        
+        for part in parts:
+            if not part.isdigit():
+                invalid_inputs.append(part)
+                continue
+                
+            idx = int(part) - 1
+            if not (0 <= idx < len(records)):
+                invalid_inputs.append(part)
+                continue
+                
+            ids_to_edit.append(records[idx]) # Store full record
+            
+        if invalid_inputs:
+            client.send_message(to=user_id, text=f"❌ Некорректные номера: {', '.join(invalid_inputs)}")
+            return
+            
+        if not ids_to_edit:
+            client.send_message(to=user_id, text="❌ Не выбрано ни одной записи.")
+            return
+            
+        # Start editing queue
+        state["data"]["edit_queue"] = ids_to_edit
+        state["data"]["current_edit_idx"] = 0
+        
+        # Start first edit
+        process_edit_queue(client, user_id, state["data"])
+        return
+
+    if current_state == "waiting_edit_queue_hours":
+        # ... (Logic to handle hours for current edit item and move to next)
+        if message_text == "0":
+             # Abort all
+             client.send_message(to=user_id, text="🔄 Отмена редактирования")
+             clear_state(user_id)
+             u = get_user(user_id)
+             show_main_menu(client, user_id, u)
+             return
+
+        if not message_text.isdigit():
+            client.send_message(to=user_id, text="❌ Введите число.")
+            return
+            
+        new_h = int(message_text)
+        if not (1 <= new_h <= 24):
+            client.send_message(to=user_id, text="❌ Часы от 1 до 24.")
+            return
+            
+        # Save change
+        current_item = state["data"]["edit_queue"][state["data"]["current_edit_idx"]]
+        rid = current_item[0]
+        
+        if update_report_hours(rid, user_id, new_h):
+            client.send_message(to=user_id, text=f"✅ Запись #{rid} обновлена.")
+        else:
+            client.send_message(to=user_id, text=f"❌ Ошибка обновления записи #{rid}.")
+            
+        # Move to next
+        state["data"]["current_edit_idx"] += 1
+        process_edit_queue(client, user_id, state["data"])
+        return
+
+def process_edit_queue(client, user_id, data):
+    queue = data["edit_queue"]
+    idx = data["current_edit_idx"]
+    
+    if idx >= len(queue):
+        # All done
+        client.send_message(to=user_id, text="✅ Все выбранные записи отредактированы.")
+        u = get_user(user_id)
+        clear_state(user_id)
+        show_main_menu(client, user_id, u)
+        return
+        
+    # Show edit prompt for current item
+    item = queue[idx]
+    rid, wdate, act, loc, h, _ = item
+    
+    text = (
+        f"📝 *Редактирование записи {idx+1}/{len(queue)}*\n"
+        f"📅 Дата: {wdate}\n"
+        f"📍 Место: {loc}\n"
+        f"🚜 Работа: {act}\n"
+        f"🕒 Текущие часы: *{h}*\n\n"
+        f"Введите *новые часы* (или 0 для отмены всех):"
+    )
+    
+    # Update state for this step
+    set_state(user_id, "waiting_edit_queue_hours", data) # Data already contains queue/idx
+    client.send_message(to=user_id, text=text)
+
+# ... (existing code) ...
 
     if current_state == "wait_del_brig_select":
         if message_text == "0":
