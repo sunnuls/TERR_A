@@ -1338,6 +1338,50 @@ def handle_callback(client, btn: CallbackObject):
             clear_state(user_id)
             show_main_menu(client, user_id, u)
             return
+
+    # Специальные callback для возвратов по кнопке Назад (ручной поток)
+    if data == "work:choose:type":
+        state = get_state(user_id)
+        selected_date = state.get("data", {}).get("date", date.today().isoformat())
+        set_state(user_id, "pick_work_group", {"date": selected_date}, save_to_history=False)
+        buttons = [
+            Button(title="🚜 Техника", callback_data="work:grp:tech"),
+            Button(title="✋ Ручная", callback_data="work:type:manual"),
+            Button(title="🔙 Назад", callback_data="back:prev"),
+        ]
+        d_str = date.fromisoformat(selected_date).strftime("%d.%m.%Y")
+        client.send_message(to=user_id, text=f"📅 Дата: *{d_str}*\n\nВыберите *тип работы*:", buttons=buttons)
+        return
+
+    if data == "work:manual:activity":
+        state = get_state(user_id)
+        set_state(user_id, "work_manual_activity", state.get("data", {}), save_to_history=False)
+        lines = ["Выберите *вид работы* (отправьте номер):"]
+        for i, a in enumerate(ACTIVITIES_MANUAL, 1):
+            lines.append(f"{i}. {a}")
+        client.send_message(to=user_id, text="\n".join(lines), buttons=[Button(title="🔙 Назад", callback_data="back:prev")])
+        return
+
+    if data == "work:manual:field":
+        state = get_state(user_id)
+        # Перестраиваем список полей
+        locations = list_locations_with_id(GROUP_FIELDS)
+        state["data"]["locs"] = locations
+        set_state(user_id, "work_manual_field", state["data"], save_to_history=False)
+        lines = ["Выберите *поле* (отправьте номер):"]
+        for i, (_, name) in enumerate(locations, 1):
+            lines.append(f"{i}. {name}")
+        client.send_message(to=user_id, text="\n".join(lines), buttons=[Button(title="🔙 Назад", callback_data="back:prev")])
+        return
+
+    if data == "work:manual:crop":
+        state = get_state(user_id)
+        set_state(user_id, "work_manual_crop", state.get("data", {}), save_to_history=False)
+        lines = ["Выберите *культуру* (отправьте номер):"]
+        for i, c in enumerate(CROPS, 1):
+            lines.append(f"{i}. {c}")
+        client.send_message(to=user_id, text="\n".join(lines), buttons=[Button(title="🔙 Назад", callback_data="back:prev")])
+        return
     
     # Обработка команды star для IT роли
     if data == "it:star":
@@ -2000,7 +2044,8 @@ def handle_callback(client, btn: CallbackObject):
             
         elif wtype == "manual":
             # Ручная: выбор вида работы
-            set_state(user_id, "work_manual_activity", state["data"], save_to_history=False)
+            # Сохраняем шаг для корректной работы кнопки Назад
+            set_state(user_id, "work_manual_activity", state["data"], save_to_history=True, back_callback="work:choose:type")
             
             lines = ["Выберите *вид работы* (отправьте номер):"]
             for i, a in enumerate(ACTIVITIES_MANUAL, 1):
@@ -3525,14 +3570,14 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
             client.send_message(to=user_id, text="Выберите *тип работы*:", buttons=buttons)
             return
         if not message_text.isdigit():
-            client.send_message(to=user_id, text="❌ Введите номер вида работы или 0 для возврата.")
+            client.send_message(to=user_id, text="❌ Введите номер вида работы или используйте кнопку Назад.", buttons=[Button(title="🔙 Назад", callback_data="back:prev")])
             return
         choice = int(message_text)
         if not (1 <= choice <= len(ACTIVITIES_MANUAL)):
-            client.send_message(to=user_id, text="❌ Неверный номер. Введите номер из списка или 0.")
+            client.send_message(to=user_id, text="❌ Неверный номер. Введите номер из списка или нажмите Назад.", buttons=[Button(title="🔙 Назад", callback_data="back:prev")])
             return
         if choice == len(ACTIVITIES_MANUAL) and ACTIVITIES_MANUAL[choice - 1].lower() == "прочее":
-            set_state(user_id, "work_manual_activity_custom", state["data"], save_to_history=False)
+            set_state(user_id, "work_manual_activity_custom", state["data"], save_to_history=True, back_callback="work:manual:activity")
             client.send_message(to=user_id, text="📝 Введите *вид работы* текстом:", buttons=[Button(title="🔙 Назад", callback_data="back:prev")])
             return
         activity = ACTIVITIES_MANUAL[choice - 1]
@@ -3541,7 +3586,7 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
         work_data["grp"] = GROUP_HAND
         work_data["work_type"] = "manual"
         state["data"]["work"] = work_data
-        set_state(user_id, "work_manual_field", state["data"], save_to_history=False)
+        set_state(user_id, "work_manual_field", state["data"], save_to_history=True, back_callback="work:manual:activity")
 
         locations = list_locations_with_id(GROUP_FIELDS)
         state["data"]["locs"] = locations
@@ -3568,7 +3613,7 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
         work_data["grp"] = GROUP_HAND
         work_data["work_type"] = "manual"
         state["data"]["work"] = work_data
-        set_state(user_id, "work_manual_field", state["data"], save_to_history=False)
+        set_state(user_id, "work_manual_field", state["data"], save_to_history=True, back_callback="work:manual:activity")
 
         locations = list_locations_with_id(GROUP_FIELDS)
         state["data"]["locs"] = locations
@@ -3584,7 +3629,7 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
             lines = ["Выберите *вид работы* (отправьте номер):"]
             for i, a in enumerate(ACTIVITIES_MANUAL, 1):
                 lines.append(f"{i}. {a}")
-            client.send_message(to=user_id, text="\n".join(lines) + "\n\n0. 🔙 Назад")
+            client.send_message(to=user_id, text="\n".join(lines), buttons=[Button(title="🔙 Назад", callback_data="back:prev")])
             set_state(user_id, "work_manual_activity", state["data"], save_to_history=False)
             return
         locs = state.get("data", {}).get("locs", [])
@@ -3605,7 +3650,7 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
         work_data["location"] = found_loc
         work_data["loc_grp"] = GROUP_FIELDS
         state["data"]["work"] = work_data
-        set_state(user_id, "work_manual_crop", state["data"], save_to_history=False)
+        set_state(user_id, "work_manual_crop", state["data"], save_to_history=True, back_callback="work:manual:field")
 
         lines = ["Выберите *культуру* (отправьте номер):"]
         for i, c in enumerate(CROPS, 1):
@@ -3620,7 +3665,7 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
             lines = ["Выберите *поле* (отправьте номер):"]
             for i, (_, name) in enumerate(locations, 1):
                 lines.append(f"{i}. {name}")
-            client.send_message(to=user_id, text="\n".join(lines) + "\n\n0. 🔙 Назад")
+            client.send_message(to=user_id, text="\n".join(lines), buttons=[Button(title="🔙 Назад", callback_data="back:prev")])
             set_state(user_id, "work_manual_field", state["data"], save_to_history=False)
             return
         if not message_text.isdigit():
@@ -3641,7 +3686,7 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
         work_data["activity"] = f"Ручная — {activity_base} — {crop}"
         work_data["act_grp"] = GROUP_HAND
         state["data"]["work"] = work_data
-        set_state(user_id, "waiting_hours", state["data"], save_to_history=False)
+        set_state(user_id, "waiting_hours", state["data"], save_to_history=True, back_callback="work:manual:crop")
 
         work_date = work_data.get("date", date.today().isoformat())
         current_sum = sum_hours_for_user_date(user_id, work_date)
@@ -3677,7 +3722,7 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
         work_data["activity"] = f"Ручная — {activity_base} — {crop}"
         work_data["act_grp"] = GROUP_HAND
         state["data"]["work"] = work_data
-        set_state(user_id, "waiting_hours", state["data"], save_to_history=False)
+        set_state(user_id, "waiting_hours", state["data"], save_to_history=True, back_callback="work:manual:crop")
 
         work_date = work_data.get("date", date.today().isoformat())
         current_sum = sum_hours_for_user_date(user_id, work_date)
@@ -4022,10 +4067,10 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
         return
 
     if current_state == "waiting_hours":
+        state = get_state(user_id)
         # Обработка кнопки "Назад" (0) или Quick Reply
         if message_text == "0" or message_text == "back_to_loc":
             # Fallback: возврат к выбору локации
-            state = get_state(user_id)
             work_data = state["data"].get("work", {})
             activity_name = work_data.get("activity", "работа")
             
@@ -4118,7 +4163,7 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
         }
         
         state["data"]["temp_report"] = temp_report
-        set_state(user_id, "waiting_confirmation_worker", state["data"], save_to_history=False)
+        set_state(user_id, "waiting_confirmation_worker", state["data"], save_to_history=True, back_callback="work:manual:crop" if work_data.get("work_type") == "manual" else None)
         
         d_str = date.fromisoformat(temp_report["work_date"]).strftime("%d.%m.%Y")
         
