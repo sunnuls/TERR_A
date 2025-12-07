@@ -4699,7 +4699,12 @@ def process_edit_queue(client, user_id, data):
         state["data"] = state.get("data", {}) or {}
         state["data"]["rows"] = rows
         # Сохраняем шаг для корректного Back
-        set_state(user_id, "brig_zucchini_field", state["data"], save_to_history=True, back_callback="brig:report:date:" + state["data"].get("date", ""))
+        back_cb = None
+        if state["data"].get("date"):
+            back_cb = f"brig:report:date:{state['data']['date']}"
+        else:
+            back_cb = "menu:brigadier"
+        set_state(user_id, "brig_zucchini_field", state["data"], save_to_history=True, back_callback=back_cb)
         buttons = [Button(title="🔙 Назад", callback_data="back:prev")]
         client.send_message(to=user_id, text="Введите *название поля*:", buttons=buttons)
         return
@@ -4769,7 +4774,11 @@ def process_edit_queue(client, user_id, data):
         state["data"] = state.get("data", {}) or {}
         state["data"]["rows"] = rows
         # Сохраняем историю для корректного Back (к выбору культуры/даты)
-        back_cb = "brig:report:date:" + state["data"].get("date", "")
+        back_cb = None
+        if state["data"].get("date"):
+            back_cb = f"brig:report:date:{state['data']['date']}"
+        else:
+            back_cb = "menu:brigadier"
         set_state(user_id, "brig_potato_field", state["data"], save_to_history=True, back_callback=back_cb)
         buttons = [Button(title="🔙 Назад", callback_data="back:prev")]
         client.send_message(to=user_id, text="Введите *название поля*:", buttons=buttons)
