@@ -1953,6 +1953,23 @@ def handle_callback(client, btn: CallbackObject):
         d_str = date.fromisoformat(selected_date).strftime("%d.%m.%Y")
         client.send_message(to=user_id, text=f"📅 Дата: *{d_str}*\n\nВыберите *тип работы*:", buttons=buttons)
 
+    elif data == "work:grp:tech":
+        # Intermediate step: Technique -> Tractor/KamAZ choice
+        state = get_state(user_id)
+        work_data = state.get("data", {}) if state else {}
+        work_date = work_data.get("date", date.today().isoformat())
+        
+        # Save current state so Back works (returns to date selection/menu:work)
+        set_state(user_id, "work_pick_type", {"date": work_date}, back_callback="menu:work")
+        
+        buttons = [
+            Button(title="🚜 Трактор", callback_data="work:type:tractor"),
+            Button(title="🚛 КамАЗ", callback_data="work:type:kamaz"),
+            Button(title="🔙 Назад", callback_data="back:prev"),
+        ]
+        d_str = date.fromisoformat(work_date).strftime("%d.%m.%Y")
+        client.send_message(to=user_id, text=f"📅 Дата: *{d_str}*\n\nВыберите *технику*:", buttons=buttons)
+    
     elif data.startswith("work:type:"):
         wtype = data.split(":")[2]
         state = get_state(user_id)
