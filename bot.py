@@ -2772,6 +2772,24 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
             client.send_message(to=user_id, text=debug_info)
         return
     
+    # Команда rb1 для IT: показать меню обычного работяги
+    if norm_text == "rb1":
+        if is_it(user_id):
+            u = get_user(user_id)
+            # Принудительно показываем меню работяги (ОТД, Статистика, Еще)
+            name = (u or {}).get("full_name") or "—"
+            buttons = [
+                Button(title="🚜 ОТД", callback_data="menu:work"),
+                Button(title="📊 Статистика", callback_data="menu:stats"),
+                Button(title="Ещё...", callback_data="menu:more"),
+            ]
+            text = f"👤 *{name}*\n\nВыберите действие: 🌻"
+            client.send_message(to=user_id, text=text, buttons=buttons)
+            return
+        else:
+            client.send_message(to=user_id, text="❌ Эта команда только для IT отдела.")
+            return
+    
     # Команда для проверки TIM роли
     if norm_text in {"tim", "тим"}:
         # Разрешаем вызывать TIM меню как IT-шникам, так и самим TIM-ам
