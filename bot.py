@@ -1038,10 +1038,11 @@ def show_main_menu(wa: WhatsApp360Client, user_id: str, u: dict):
             Button(title="📊 Статистика", callback_data="menu:stats"),
         ]
     elif brigadier:
+        # Бригадир сразу попадает в бриг-меню: ОБ, Статистика, Настройки
         buttons = [
-            Button(title="👷 ОБ (Отчет)", callback_data="menu:brigadier"), # ОБ вместо ОТД
+            Button(title="👷 ОБ (Отчет)", callback_data="brig:report"),  # сразу в отчет
             Button(title="📊 Статистика", callback_data="menu:stats"),
-            Button(title="⚙️ Настройки", callback_data="menu:settings"), # Вместо Ещё
+            Button(title="⚙️ Настройки", callback_data="menu:settings"),
         ]
         text = f"👤 *{name}*\n\nВыберите действие: 🌻"
     else:
