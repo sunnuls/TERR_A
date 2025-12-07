@@ -3078,6 +3078,32 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
     # -----------------------------
     # Новый поток: Трактор / КамАЗ / Ручная
     # -----------------------------
+    if current_state == "work_tractor_activity_custom":
+        if message_text == "0":
+            # Назад к списку видов деятельности
+            lines = ["Выберите *вид деятельности* (отправьте номер):"]
+            for i, a in enumerate(ACTIVITIES_TRACTOR, 1):
+                lines.append(f"{i}. {a}")
+            client.send_message(to=user_id, text="\n".join(lines) + "\n\n0. 🔙 Назад")
+            set_state(user_id, "work_tractor_activity", state["data"], save_to_history=False)
+            return
+        if len(message_text.strip()) < 2:
+            client.send_message(to=user_id, text="❌ Введите название (минимум 2 символа) или 0 для возврата.")
+            return
+        work_data = state.get("data", {}).get("work", {})
+        work_data["activity_base"] = message_text.strip()
+        work_data["grp"] = GROUP_TECH
+        state["data"]["work"] = work_data
+        set_state(user_id, "work_tractor_field", state["data"], save_to_history=False)
+
+        locations = list_locations_with_id(GROUP_FIELDS)
+        state["data"]["locs"] = locations
+        lines = ["Выберите *поле* (отправьте номер):"]
+        for i, (_, name) in enumerate(locations, 1):
+            lines.append(f"{i}. {name}")
+        client.send_message(to=user_id, text="\n".join(lines) + "\n\n0. 🔙 Назад")
+        return
+
     if current_state == "work_tractor_machinery":
         # Выбор трактора
         if message_text == "0":
@@ -3125,6 +3151,11 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
         choice = int(message_text)
         if not (1 <= choice <= len(ACTIVITIES_TRACTOR)):
             client.send_message(to=user_id, text="❌ Неверный номер. Введите номер из списка или 0.")
+            return
+        # Прочее -> свободный ввод
+        if choice == len(ACTIVITIES_TRACTOR) and ACTIVITIES_TRACTOR[choice - 1].lower() == "прочее":
+            set_state(user_id, "work_tractor_activity_custom", state["data"], save_to_history=False)
+            client.send_message(to=user_id, text="📝 Введите *вид деятельности* текстом:\n\n0. 🔙 Назад")
             return
         activity = ACTIVITIES_TRACTOR[choice - 1]
         work_data = state.get("data", {}).get("work", {})
@@ -3194,6 +3225,11 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
         if not (1 <= choice <= len(CROPS)):
             client.send_message(to=user_id, text="❌ Неверный номер. Введите номер из списка или 0.")
             return
+        # Прочее -> свободный ввод
+        if choice == len(CROPS) and CROPS[choice - 1].lower() == "прочее":
+            set_state(user_id, "work_tractor_crop_custom", state["data"], save_to_history=False)
+            client.send_message(to=user_id, text="📝 Введите *культуру* текстом:\n\n0. 🔙 Назад")
+            return
         crop = CROPS[choice - 1]
         work_data = state.get("data", {}).get("work", {})
         work_data["crop"] = crop
@@ -3203,6 +3239,44 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
         work_data["activity"] = f"Трактор {machinery} — {activity_base} — {crop}"
         work_data["act_grp"] = GROUP_TECH
         # Сохраняем и переходим к вводу часов
+        state["data"]["work"] = work_data
+        set_state(user_id, "waiting_hours", state["data"], save_to_history=False)
+
+        work_date = work_data.get("date", date.today().isoformat())
+        current_sum = sum_hours_for_user_date(user_id, work_date)
+        d_str = date.fromisoformat(work_date).strftime("%d.%m.%Y")
+        text = (
+            f"📅 Дата: *{d_str}*\n"
+            f"🚜 {machinery}\n"
+            f"🔧 {activity_base}\n"
+            f"🌱 {crop}\n"
+            f"📍 {work_data.get('location','')}\n"
+            f"📊 Уже внесено: *{current_sum}* ч\n\n"
+            f"Введите *количество часов*:"
+        )
+        quick_replies = [{"id": "back_to_loc", "title": "🔙 Назад"}]
+        client.send_text_with_quick_replies(to=user_id, text=text, quick_replies=quick_replies)
+        return
+
+    if current_state == "work_tractor_crop_custom":
+        if message_text == "0":
+            # Назад к выбору культуры
+            lines = ["Выберите *культуру* (отправьте номер):"]
+            for i, c in enumerate(CROPS, 1):
+                lines.append(f"{i}. {c}")
+            client.send_message(to=user_id, text="\n".join(lines) + "\n\n0. 🔙 Назад")
+            set_state(user_id, "work_tractor_crop", state["data"], save_to_history=False)
+            return
+        if len(message_text.strip()) < 2:
+            client.send_message(to=user_id, text="❌ Введите название культуры (минимум 2 символа) или 0 для возврата.")
+            return
+        crop = message_text.strip()
+        work_data = state.get("data", {}).get("work", {})
+        work_data["crop"] = crop
+        machinery = work_data.get("machinery", "Трактор")
+        activity_base = work_data.get("activity_base", "Работа")
+        work_data["activity"] = f"Трактор {machinery} — {activity_base} — {crop}"
+        work_data["act_grp"] = GROUP_TECH
         state["data"]["work"] = work_data
         set_state(user_id, "waiting_hours", state["data"], save_to_history=False)
 
@@ -3238,6 +3312,10 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
         choice = int(message_text)
         if not (1 <= choice <= len(CROPS_KAMAZ)):
             client.send_message(to=user_id, text="❌ Неверный номер. Введите номер из списка или 0.")
+            return
+        if choice == len(CROPS_KAMAZ) and CROPS_KAMAZ[choice - 1].lower() == "прочее":
+            set_state(user_id, "work_kamaz_crop_custom", state["data"], save_to_history=False)
+            client.send_message(to=user_id, text="📝 Введите *культуру* текстом:\n\n0. 🔙 Назад")
             return
         crop = CROPS_KAMAZ[choice - 1]
         work_data = state.get("data", {}).get("work", {})
@@ -3375,6 +3453,28 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
         client.send_text_with_quick_replies(to=user_id, text=text, quick_replies=quick_replies)
         return
 
+    if current_state == "work_kamaz_crop_custom":
+        if message_text == "0":
+            # Назад к выбору культуры
+            lines = ["Выберите *культуру* (отправьте номер):"]
+            for i, c in enumerate(CROPS_KAMAZ, 1):
+                lines.append(f"{i}. {c}")
+            client.send_message(to=user_id, text="\n".join(lines) + "\n\n0. 🔙 Назад")
+            set_state(user_id, "work_kamaz_crop", state["data"], save_to_history=False)
+            return
+        if len(message_text.strip()) < 2:
+            client.send_message(to=user_id, text="❌ Введите название культуры (минимум 2 символа) или 0 для возврата.")
+            return
+        crop = message_text.strip()
+        work_data = state.get("data", {}).get("work", {})
+        work_data["crop"] = crop
+        work_data["work_type"] = "kamaz"
+        work_data["grp"] = GROUP_KAMAZ
+        state["data"]["work"] = work_data
+        set_state(user_id, "work_kamaz_trips", state["data"], save_to_history=False)
+        client.send_message(to=user_id, text="Введите *количество рейсов* (число):\n\n0. 🔙 Назад")
+        return
+
     if current_state == "work_manual_activity":
         if message_text == "0":
             # Назад к выбору типа работы
@@ -3393,9 +3493,40 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
         if not (1 <= choice <= len(ACTIVITIES_MANUAL)):
             client.send_message(to=user_id, text="❌ Неверный номер. Введите номер из списка или 0.")
             return
+        if choice == len(ACTIVITIES_MANUAL) and ACTIVITIES_MANUAL[choice - 1].lower() == "прочее":
+            set_state(user_id, "work_manual_activity_custom", state["data"], save_to_history=False)
+            client.send_message(to=user_id, text="📝 Введите *вид работы* текстом:\n\n0. 🔙 Назад")
+            return
         activity = ACTIVITIES_MANUAL[choice - 1]
         work_data = state.get("data", {}).get("work", {})
         work_data["activity_base"] = activity
+        work_data["grp"] = GROUP_HAND
+        work_data["work_type"] = "manual"
+        state["data"]["work"] = work_data
+        set_state(user_id, "work_manual_field", state["data"], save_to_history=False)
+
+        locations = list_locations_with_id(GROUP_FIELDS)
+        state["data"]["locs"] = locations
+        lines = ["Выберите *поле* (отправьте номер):"]
+        for i, (_, name) in enumerate(locations, 1):
+            lines.append(f"{i}. {name}")
+        client.send_message(to=user_id, text="\n".join(lines) + "\n\n0. 🔙 Назад")
+        return
+
+    if current_state == "work_manual_activity_custom":
+        if message_text == "0":
+            # Назад к списку
+            lines = ["Выберите *вид работы* (отправьте номер):"]
+            for i, a in enumerate(ACTIVITIES_MANUAL, 1):
+                lines.append(f"{i}. {a}")
+            client.send_message(to=user_id, text="\n".join(lines) + "\n\n0. 🔙 Назад")
+            set_state(user_id, "work_manual_activity", state["data"], save_to_history=False)
+            return
+        if len(message_text.strip()) < 2:
+            client.send_message(to=user_id, text="❌ Введите название работы (минимум 2 символа) или 0 для возврата.")
+            return
+        work_data = state.get("data", {}).get("work", {})
+        work_data["activity_base"] = message_text.strip()
         work_data["grp"] = GROUP_HAND
         work_data["work_type"] = "manual"
         state["data"]["work"] = work_data
@@ -3461,7 +3592,47 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
         if not (1 <= choice <= len(CROPS)):
             client.send_message(to=user_id, text="❌ Неверный номер. Введите номер из списка или 0.")
             return
+        if choice == len(CROPS) and CROPS[choice - 1].lower() == "прочее":
+            set_state(user_id, "work_manual_crop_custom", state["data"], save_to_history=False)
+            client.send_message(to=user_id, text="📝 Введите *культуру* текстом:\n\n0. 🔙 Назад")
+            return
         crop = CROPS[choice - 1]
+        work_data = state.get("data", {}).get("work", {})
+        work_data["crop"] = crop
+        activity_base = work_data.get("activity_base", "Работа")
+        work_data["activity"] = f"Ручная — {activity_base} — {crop}"
+        work_data["act_grp"] = GROUP_HAND
+        state["data"]["work"] = work_data
+        set_state(user_id, "waiting_hours", state["data"], save_to_history=False)
+
+        work_date = work_data.get("date", date.today().isoformat())
+        current_sum = sum_hours_for_user_date(user_id, work_date)
+        d_str = date.fromisoformat(work_date).strftime("%d.%m.%Y")
+        text = (
+            f"📅 Дата: *{d_str}*\n"
+            f"✋ {activity_base}\n"
+            f"🌱 {crop}\n"
+            f"📍 {work_data.get('location','')}\n"
+            f"📊 Уже внесено: *{current_sum}* ч\n\n"
+            f"Введите *количество часов*:"
+        )
+        quick_replies = [{"id": "back_to_loc", "title": "🔙 Назад"}]
+        client.send_text_with_quick_replies(to=user_id, text=text, quick_replies=quick_replies)
+        return
+
+    if current_state == "work_manual_crop_custom":
+        if message_text == "0":
+            # Назад к выбору культуры
+            lines = ["Выберите *культуру* (отправьте номер):"]
+            for i, c in enumerate(CROPS, 1):
+                lines.append(f"{i}. {c}")
+            client.send_message(to=user_id, text="\n".join(lines) + "\n\n0. 🔙 Назад")
+            set_state(user_id, "work_manual_crop", state["data"], save_to_history=False)
+            return
+        if len(message_text.strip()) < 2:
+            client.send_message(to=user_id, text="❌ Введите название культуры (минимум 2 символа) или 0 для возврата.")
+            return
+        crop = message_text.strip()
         work_data = state.get("data", {}).get("work", {})
         work_data["crop"] = crop
         activity_base = work_data.get("activity_base", "Работа")
