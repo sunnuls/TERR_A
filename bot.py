@@ -3385,11 +3385,11 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
             lines = ["Выберите *культуру* (отправьте номер):"]
             for i, c in enumerate(CROPS, 1):
                 lines.append(f"{i}. {c}")
-            client.send_message(to=user_id, text="\n".join(lines) + "\n\n0. 🔙 Назад")
-        set_state(user_id, "work_tractor_crop", state["data"], save_to_history=True, back_callback="work:tractor:field")
+            client.send_message(to=user_id, text="\n".join(lines), buttons=[Button(title="🔙 Назад", callback_data="back:prev")])
+            set_state(user_id, "work_tractor_crop", state["data"], save_to_history=True, back_callback="work:tractor:field")
             return
         if len(message_text.strip()) < 2:
-            client.send_message(to=user_id, text="❌ Введите название культуры (минимум 2 символа) или 0 для возврата.")
+            client.send_message(to=user_id, text="❌ Введите название культуры (минимум 2 символа) или нажмите Назад.", buttons=[Button(title="🔙 Назад", callback_data="back:prev")])
             return
         crop = message_text.strip()
         work_data = state.get("data", {}).get("work", {})
@@ -3399,7 +3399,7 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
         work_data["activity"] = f"Трактор {machinery} — {activity_base} — {crop}"
         work_data["act_grp"] = GROUP_TECH
         state["data"]["work"] = work_data
-        set_state(user_id, "waiting_hours", state["data"], save_to_history=False)
+        set_state(user_id, "waiting_hours", state["data"], save_to_history=True, back_callback="work:tractor:crop")
 
         work_date = work_data.get("date", date.today().isoformat())
         current_sum = sum_hours_for_user_date(user_id, work_date)
