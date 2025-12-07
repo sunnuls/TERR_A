@@ -1906,12 +1906,16 @@ def handle_callback(client, btn: CallbackObject):
     elif data == "cancel_activity":
         # Cancel activity selection, return to work type selection
         buttons = [
-            Button(title="Техника", callback_data="work:grp:tech"),
-            Button(title="Ручная", callback_data="work:grp:hand"),
-            Button(title="🔙 Назад", callback_data="back:prev"),
+            Button(title="🚜 Трактор", callback_data="work:type:tractor"),
+            Button(title="🚛 КамАЗ", callback_data="work:type:kamaz"),
+            Button(title="✋ Ручная", callback_data="work:type:manual"),
         ]
         client.send_message(to=user_id, text="Выберите *тип работы*:", buttons=buttons)
-        clear_state(user_id)
+        # Don't clear state, just go back to work_pick_type? 
+        # Actually we need to reset state to work_pick_type to be clean
+        # state = get_state(user_id)
+        # date = state["data"].get("date")
+        # set_state(user_id, "work_pick_type", {"date": date})
         return
     
     elif data == "cancel_location":
@@ -3267,6 +3271,11 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
             set_state(user_id, "it_waiting_hours", {"date": selected_date}, save_to_history=False)
             quick_replies = [{"id": "back_to_date", "title": "🔙 Back"}]
             client.send_text_with_quick_replies(to=user_id, text=text, quick_replies=quick_replies)
+            
+        elif next_prefix == "tim:date":
+            # TIM Date selected -> Free input Activity
+            set_state(user_id, "tim_wait_activity", {"date": selected_date}, save_to_history=False)
+            client.send_message(to=user_id, text="🇨🇳 Введите *вид работы*:\n\n0. 🔙 Назад")
             
         return
 
