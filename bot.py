@@ -2614,50 +2614,47 @@ def handle_callback(client, btn: CallbackObject):
     # -----------------------------
     
     elif data == "menu:brigadier":
-        # Показать меню выбора действия (вместо даты)
+        # Показать меню выбора действия (кнопки, как на первом скрине)
         # IT и админам тоже разрешаем вход для тестов/поддержки
         if not (is_brigadier(user_id) or is_it(user_id) or is_admin(user_id)):
             client.send_message(to=user_id, text="❌ У вас нет прав бригадира")
             return
-        # Сохраняем текущее состояние в историю перед переходом
         save_to_history(user_id, "menu:root")
-        
-        # Показываем меню бригадира (без даты пока)
         buttons = [
-            Button(title="🥒 Кабачок", callback_data="brig:menu:zucchini"),
-            Button(title="🥔 Картошка", callback_data="brig:menu:potato"),
+            Button(title="👷 ОБ (Отчет)", callback_data="brig:report"),
             Button(title="📊 Статистика", callback_data="brig:stats"),
+            Button(title="⚙️ Настройки", callback_data="menu:settings"),
         ]
-        # Добавляем кнопку сменить имя (в отдельный ряд или список)
-        # WhatsApp позволяет 3 кнопки в interactive message. Для 4-й нужен List или 2 сообщения.
-        # Отправим 3 кнопки, а "Сменить имя" и "Назад" отдельным сообщением или меню.
-        # Лучше использовать List Message для главного меню бригадира, там много опций.
-        
-        sections = [
-            {
-                "title": "Работа",
-                "rows": [
-                    {"id": "brig:menu:zucchini", "title": "🥒 Кабачок"},
-                    {"id": "brig:menu:potato", "title": "🥔 Картошка"}
-                ]
-            },
-            {
-                "title": "Управление",
-                "rows": [
-                    {"id": "brig:stats", "title": "📊 Статистика"},
-                    {"id": "menu:name", "title": "✏️ Сменить имя"}, # Re-use generic name change
-                    {"id": "back:prev", "title": "🔙 Назад"}
-                ]
-            }
+        client.send_message(to=user_id, text="👷 *Меню бригадира*\n\nВыберите действие: 🌻", buttons=buttons)
+
+    elif data == "brig:report":
+        # ОБ (Отчет) -> выбор даты
+        show_date_selection(client, user_id, prefix="brig:report:date")
+
+    elif data.startswith("brig:report:date:"):
+        # После выбора даты -> выбор культуры
+        selected_date = data.split(":")[3]
+        buttons = [
+            Button(title="🥒 Кабачок", callback_data=f"brig:report:type:zucchini:{selected_date}"),
+            Button(title="🥔 Картошка", callback_data=f"brig:report:type:potato:{selected_date}"),
+            Button(title="🔙 Назад", callback_data="brig:report"),
         ]
-        
-        client.send_list_message(
-            to=user_id,
-            header_text="👷 Меню бригадира",
-            body_text="Выберите действие:",
-            button_text="Меню",
-            sections=sections
-        )
+        d_str = date.fromisoformat(selected_date).strftime("%d.%m.%Y")
+        client.send_message(to=user_id, text=f"📅 *{d_str}*\nВыберите культуру:", buttons=buttons)
+
+    elif data.startswith("brig:report:type:zucchini:"):
+        selected_date = data.split(":")[4]
+        work_payload = {"work_type": "Кабачок", "date": selected_date}
+        set_state(user_id, "brig_zucchini_rows", work_payload, save_to_history=False)
+        buttons = [Button(title="🔙 Назад", callback_data=f"brig:report:date:{selected_date}")]
+        client.send_message(to=user_id, text=f"🥒 *Кабачок* ({selected_date})\n\nВведите *количество рядов*:", buttons=buttons)
+
+    elif data.startswith("brig:report:type:potato:"):
+        selected_date = data.split(":")[4]
+        work_payload = {"work_type": "Картошка", "date": selected_date}
+        set_state(user_id, "brig_potato_rows", work_payload, save_to_history=False)
+        buttons = [Button(title="🔙 Назад", callback_data=f"brig:report:date:{selected_date}")]
+        client.send_message(to=user_id, text=f"🥔 *Картошка* ({selected_date})\n\nВведите *количество выкопанных рядов*:", buttons=buttons)
 
     elif data == "brig:menu:zucchini":
         # Выбор даты для кабачков
@@ -4688,61 +4685,60 @@ def process_edit_queue(client, user_id, data):
     
     # Форма кабачков: ряды
     if current_state == "brig_zucchini_rows":
-        # Обработка возврата назад
+        # Обработка ввода рядов для кабачков
         if message_text == "0":
             if go_back(client, user_id):
                 return
         if not message_text.isdigit():
-            client.send_message(to=user_id, text="❌ Введите число (количество рядов):\n\n0. 🔙 Назад")
+            buttons = [Button(title="🔙 Назад", callback_data="back:prev")]
+            client.send_message(to=user_id, text="❌ Введите число (количество рядов):", buttons=buttons)
             return
         rows = int(message_text)
+        # Страхуемся, что есть data
+        state["data"] = state.get("data", {}) or {}
         state["data"]["rows"] = rows
-        set_state(user_id, "brig_zucchini_field", state["data"], save_to_history=False)
+        # Сохраняем шаг для корректного Back
+        set_state(user_id, "brig_zucchini_field", state["data"], save_to_history=True, back_callback="brig:report:date:" + state["data"].get("date", ""))
         buttons = [Button(title="🔙 Назад", callback_data="back:prev")]
         client.send_message(to=user_id, text="Введите *название поля*:", buttons=buttons)
         return
     
     # Форма кабачков: поле
     if current_state == "brig_zucchini_field":
-        # Обработка возврата назад
         if message_text == "0":
             if go_back(client, user_id):
                 return
+        state["data"] = state.get("data", {}) or {}
         state["data"]["field"] = message_text
-        save_to_history(user_id, "brig:zucchini")
-        set_state(user_id, "brig_zucchini_workers", state["data"], save_to_history=False)
+        # Сохраняем в историю для back
+        set_state(user_id, "brig_zucchini_workers", state["data"], save_to_history=True, back_callback="back:prev")
         buttons = [Button(title="🔙 Назад", callback_data="back:prev")]
         client.send_message(to=user_id, text="Введите *количество людей*:", buttons=buttons)
         return
     
     # Форма кабачков: люди (финальный шаг)
     if current_state == "brig_zucchini_workers":
-        # Обработка возврата назад
         if message_text == "0":
             if go_back(client, user_id):
                 return
         if not message_text.isdigit():
-            client.send_message(to=user_id, text="❌ Введите число (количество людей):\n\n0. 🔙 Назад")
+            buttons = [Button(title="🔙 Назад", callback_data="back:prev")]
+            client.send_message(to=user_id, text="❌ Введите число (количество людей):", buttons=buttons)
             return
         workers = int(message_text)
-        
-        # Получаем дату из состояния
+        state["data"] = state.get("data", {}) or {}
         work_date = state["data"].get("date", date.today().isoformat())
-        
         temp_report = {
-            "work_type": state["data"]["work_type"],
-            "rows": state["data"]["rows"],
-            "field": state["data"]["field"],
+            "work_type": state["data"].get("work_type", "Кабачок"),
+            "rows": state["data"].get("rows", 0),
+            "field": state["data"].get("field", ""),
             "bags": 0,
             "workers": workers,
             "work_date": work_date
         }
-        
         state["data"]["temp_report"] = temp_report
-        set_state(user_id, "waiting_confirmation_brigadier", state["data"])
-        
+        set_state(user_id, "waiting_confirmation_brigadier", state["data"], save_to_history=True, back_callback="back:prev")
         d_str = date.fromisoformat(work_date).strftime("%d.%m.%Y")
-        
         text = (
             f"📋 *Проверьте данные*\n\n"
             f"📅 Дата: *{d_str}*\n"
@@ -4752,12 +4748,10 @@ def process_edit_queue(client, user_id, data):
             f"Людей: *{workers}*\n\n"
             f"Все верно?"
         )
-        
         buttons = [
             Button(title="✅ Подтвердить", callback_data="confirm:brig"),
             Button(title="✏️ Изменить", callback_data="edit:brig")
         ]
-        
         client.send_message(to=user_id, text=text, buttons=buttons)
         return
     
