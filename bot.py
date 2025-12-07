@@ -1948,7 +1948,7 @@ def handle_callback(client, btn: CallbackObject):
         
         buttons = [
             Button(title="Техника", callback_data="work:grp:tech"),
-            Button(title="Ручная", callback_data="work:grp:hand"),
+            Button(title="Ручная", callback_data="work:type:manual"),
             Button(title="🔙 Назад", callback_data="back:prev"),
         ]
         d_str = date.fromisoformat(selected_date).strftime("%d.%m.%Y")
@@ -2005,8 +2005,12 @@ def handle_callback(client, btn: CallbackObject):
             lines = ["Выберите *вид работы* (отправьте номер):"]
             for i, a in enumerate(ACTIVITIES_MANUAL, 1):
                 lines.append(f"{i}. {a}")
-                
-            client.send_message(to=user_id, text="\n".join(lines) + "\n\n0. 🔙 Назад")
+            
+            client.send_message(
+                to=user_id,
+                text="\n".join(lines),
+                buttons=[Button(title="🔙 Назад", callback_data="back:prev")]
+            )
 
     elif data.startswith("brig:shift:"):
         shift_code = data.split(":")[2]
@@ -3694,7 +3698,7 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
         if message_text == "0":
             buttons = [
                 Button(title="Техника", callback_data="work:grp:tech"),
-                Button(title="Ручная", callback_data="work:grp:hand"),
+                Button(title="Ручная", callback_data="work:type:manual"),
                 Button(title="🔙 Назад", callback_data="back:prev"),
             ]
             client.send_message(to=user_id, text="Выберите *тип работы*:", buttons=buttons)
