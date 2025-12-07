@@ -3231,14 +3231,14 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
         next_prefix = state["data"].get("next_prefix")
         
         if next_prefix == "work:date":
-            # Worker flow: Date selected -> Choose Work Type (Tractor / KamAZ / Manual)
+            # Worker flow: Date selected -> Choose Work Type (Technique / Manual)
             # Сохраняем дату в состоянии
-            set_state(user_id, "work_pick_type", {"date": selected_date})
+            set_state(user_id, "pick_work_group", {"date": selected_date})
             
             buttons = [
-                Button(title="🚜 Трактор", callback_data="work:type:tractor"),
-                Button(title="🚛 КамАЗ", callback_data="work:type:kamaz"),
+                Button(title="🚜 Техника", callback_data="work:grp:tech"),
                 Button(title="✋ Ручная", callback_data="work:type:manual"),
+                Button(title="🔙 Назад", callback_data="back:prev"),
             ]
             d_str = date.fromisoformat(selected_date).strftime("%d.%m.%Y")
             client.send_message(to=user_id, text=f"📅 Дата: *{d_str}*\n\nВыберите *тип работы*:", buttons=buttons)
