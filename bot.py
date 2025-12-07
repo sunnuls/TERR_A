@@ -2851,7 +2851,7 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
             
             client.send_message(to=user_id, text=text)
             return
-        elif norm_text == "briq":
+        elif norm_text in {"briq", "бриг", "/бриг"}:
             # Сохраняем текущее состояние в историю перед переходом
             save_to_history(user_id, "menu:more")
             
