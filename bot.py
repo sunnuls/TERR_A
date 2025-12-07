@@ -1340,6 +1340,44 @@ def handle_callback(client, btn: CallbackObject):
             return
 
     # Специальные callback для возвратов по кнопке Назад (ручной поток)
+    if data == "work:tractor:machinery":
+        state = get_state(user_id)
+        set_state(user_id, "work_tractor_machinery", state.get("data", {}), save_to_history=False)
+        lines = ["Выберите *трактор* (отправьте номер):"]
+        for i, m in enumerate(TRACTORS, 1):
+            lines.append(f"{i}. {m}")
+        client.send_message(to=user_id, text="\n".join(lines), buttons=[Button(title="🔙 Назад", callback_data="back:prev")])
+        return
+
+    if data == "work:tractor:activity":
+        state = get_state(user_id)
+        set_state(user_id, "work_tractor_activity", state.get("data", {}), save_to_history=False)
+        lines = ["Выберите *вид деятельности* (отправьте номер):"]
+        for i, a in enumerate(ACTIVITIES_TRACTOR, 1):
+            lines.append(f"{i}. {a}")
+        client.send_message(to=user_id, text="\n".join(lines), buttons=[Button(title="🔙 Назад", callback_data="back:prev")])
+        return
+
+    if data == "work:tractor:field":
+        state = get_state(user_id)
+        locations = list_locations_with_id(GROUP_FIELDS)
+        state["data"]["locs"] = locations
+        set_state(user_id, "work_tractor_field", state["data"], save_to_history=False)
+        lines = ["Выберите *поле* (отправьте номер):"]
+        for i, (_, name) in enumerate(locations, 1):
+            lines.append(f"{i}. {name}")
+        client.send_message(to=user_id, text="\n".join(lines), buttons=[Button(title="🔙 Назад", callback_data="back:prev")])
+        return
+
+    if data == "work:tractor:crop":
+        state = get_state(user_id)
+        set_state(user_id, "work_tractor_crop", state.get("data", {}), save_to_history=False)
+        lines = ["Выберите *культуру* (отправьте номер):"]
+        for i, c in enumerate(CROPS, 1):
+            lines.append(f"{i}. {c}")
+        client.send_message(to=user_id, text="\n".join(lines), buttons=[Button(title="🔙 Назад", callback_data="back:prev")])
+        return
+
     if data == "work:choose:type":
         state = get_state(user_id)
         selected_date = state.get("data", {}).get("date", date.today().isoformat())
@@ -2024,7 +2062,7 @@ def handle_callback(client, btn: CallbackObject):
         
         if wtype == "tractor":
             # Трактор: выбор техники
-            set_state(user_id, "work_tractor_machinery", state["data"], save_to_history=False)
+            set_state(user_id, "work_tractor_machinery", state["data"], save_to_history=True, back_callback="work:choose:type")
             
             lines = ["Выберите *трактор* (отправьте номер):"]
             for i, m in enumerate(TRACTORS, 1):
@@ -3143,7 +3181,7 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
         work_data["activity_base"] = message_text.strip()
         work_data["grp"] = GROUP_TECH
         state["data"]["work"] = work_data
-        set_state(user_id, "work_tractor_field", state["data"], save_to_history=False)
+        set_state(user_id, "work_tractor_field", state["data"], save_to_history=True, back_callback="work:tractor:activity")
 
         locations = list_locations_with_id(GROUP_FIELDS)
         state["data"]["locs"] = locations
@@ -3182,7 +3220,7 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
         work_data["date"] = state.get("data", {}).get("date", date.today().isoformat())
         work_data["work_type"] = "tractor"
         state["data"]["work"] = work_data
-        set_state(user_id, "work_tractor_activity", state["data"], save_to_history=False)
+        set_state(user_id, "work_tractor_activity", state["data"], save_to_history=True, back_callback="work:tractor:machinery")
 
         lines = ["Выберите *вид деятельности* (отправьте номер):"]
         for i, a in enumerate(ACTIVITIES_TRACTOR, 1):
@@ -3212,7 +3250,7 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
         work_data["date"] = state.get("data", {}).get("date", date.today().isoformat())
         work_data["work_type"] = "tractor"
         state["data"]["work"] = work_data
-        set_state(user_id, "work_tractor_activity", state["data"], save_to_history=False)
+        set_state(user_id, "work_tractor_activity", state["data"], save_to_history=True, back_callback="work:tractor:machinery")
 
         lines = ["Выберите *вид деятельности* (отправьте номер):"]
         for i, a in enumerate(ACTIVITIES_TRACTOR, 1):
@@ -3245,7 +3283,7 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
         work_data["activity_base"] = activity
         work_data["grp"] = GROUP_TECH
         state["data"]["work"] = work_data
-        set_state(user_id, "work_tractor_field", state["data"], save_to_history=False)
+        set_state(user_id, "work_tractor_field", state["data"], save_to_history=True, back_callback="work:tractor:activity")
 
         locations = list_locations_with_id(GROUP_FIELDS)
         state["data"]["locs"] = locations
@@ -3283,7 +3321,7 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
         work_data["location"] = found_loc
         work_data["loc_grp"] = GROUP_FIELDS
         state["data"]["work"] = work_data
-        set_state(user_id, "work_tractor_crop", state["data"], save_to_history=False)
+        set_state(user_id, "work_tractor_crop", state["data"], save_to_history=True, back_callback="work:tractor:field")
 
         lines = ["Выберите *культуру* (отправьте номер):"]
         for i, c in enumerate(CROPS, 1):
@@ -3323,7 +3361,7 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
         work_data["act_grp"] = GROUP_TECH
         # Сохраняем и переходим к вводу часов
         state["data"]["work"] = work_data
-        set_state(user_id, "waiting_hours", state["data"], save_to_history=False)
+        set_state(user_id, "waiting_hours", state["data"], save_to_history=True, back_callback="work:tractor:crop")
 
         work_date = work_data.get("date", date.today().isoformat())
         current_sum = sum_hours_for_user_date(user_id, work_date)
@@ -3348,7 +3386,7 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
             for i, c in enumerate(CROPS, 1):
                 lines.append(f"{i}. {c}")
             client.send_message(to=user_id, text="\n".join(lines) + "\n\n0. 🔙 Назад")
-            set_state(user_id, "work_tractor_crop", state["data"], save_to_history=False)
+        set_state(user_id, "work_tractor_crop", state["data"], save_to_history=True, back_callback="work:tractor:field")
             return
         if len(message_text.strip()) < 2:
             client.send_message(to=user_id, text="❌ Введите название культуры (минимум 2 символа) или 0 для возврата.")
