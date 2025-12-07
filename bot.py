@@ -3075,6 +3075,416 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
         set_state(user_id, "tim_confirm", state["data"], save_to_history=False)
         return
 
+    # -----------------------------
+    # Новый поток: Трактор / КамАЗ / Ручная
+    # -----------------------------
+    if current_state == "work_tractor_machinery":
+        # Выбор трактора
+        if message_text == "0":
+            # Назад к выбору техники (Трактор/КамАЗ)
+            buttons = [
+                Button(title="🚜 Трактор", callback_data="work:type:tractor"),
+                Button(title="🚛 КамАЗ", callback_data="work:type:kamaz"),
+                Button(title="🔙 Назад", callback_data="back:prev"),
+            ]
+            client.send_message(to=user_id, text="Выберите *технику*:", buttons=buttons)
+            return
+        if not message_text.isdigit():
+            client.send_message(to=user_id, text="❌ Введите номер трактора или 0 для возврата.")
+            return
+        choice = int(message_text)
+        if not (1 <= choice <= len(TRACTORS)):
+            client.send_message(to=user_id, text="❌ Неверный номер. Введите номер из списка или 0.")
+            return
+        machinery = TRACTORS[choice - 1]
+        work_data = state.get("data", {}).get("work", {})
+        work_data["machinery"] = machinery
+        work_data["date"] = state.get("data", {}).get("date", date.today().isoformat())
+        work_data["work_type"] = "tractor"
+        state["data"]["work"] = work_data
+        set_state(user_id, "work_tractor_activity", state["data"], save_to_history=False)
+
+        lines = ["Выберите *вид деятельности* (отправьте номер):"]
+        for i, a in enumerate(ACTIVITIES_TRACTOR, 1):
+            lines.append(f"{i}. {a}")
+        client.send_message(to=user_id, text="\n".join(lines) + "\n\n0. 🔙 Назад")
+        return
+
+    if current_state == "work_tractor_activity":
+        if message_text == "0":
+            # Назад к выбору трактора
+            lines = ["Выберите *трактор* (отправьте номер):"]
+            for i, m in enumerate(TRACTORS, 1):
+                lines.append(f"{i}. {m}")
+            client.send_message(to=user_id, text="\n".join(lines) + "\n\n0. 🔙 Назад")
+            set_state(user_id, "work_tractor_machinery", state["data"], save_to_history=False)
+            return
+        if not message_text.isdigit():
+            client.send_message(to=user_id, text="❌ Введите номер вида деятельности или 0 для возврата.")
+            return
+        choice = int(message_text)
+        if not (1 <= choice <= len(ACTIVITIES_TRACTOR)):
+            client.send_message(to=user_id, text="❌ Неверный номер. Введите номер из списка или 0.")
+            return
+        activity = ACTIVITIES_TRACTOR[choice - 1]
+        work_data = state.get("data", {}).get("work", {})
+        work_data["activity_base"] = activity
+        work_data["grp"] = GROUP_TECH
+        state["data"]["work"] = work_data
+        set_state(user_id, "work_tractor_field", state["data"], save_to_history=False)
+
+        locations = list_locations_with_id(GROUP_FIELDS)
+        state["data"]["locs"] = locations
+        lines = ["Выберите *поле* (отправьте номер):"]
+        for i, (_, name) in enumerate(locations, 1):
+            lines.append(f"{i}. {name}")
+        client.send_message(to=user_id, text="\n".join(lines) + "\n\n0. 🔙 Назад")
+        return
+
+    if current_state == "work_tractor_field":
+        if message_text == "0":
+            # Назад к выбору вида деятельности
+            lines = ["Выберите *вид деятельности* (отправьте номер):"]
+            for i, a in enumerate(ACTIVITIES_TRACTOR, 1):
+                lines.append(f"{i}. {a}")
+            client.send_message(to=user_id, text="\n".join(lines) + "\n\n0. 🔙 Назад")
+            set_state(user_id, "work_tractor_activity", state["data"], save_to_history=False)
+            return
+        locs = state.get("data", {}).get("locs", [])
+        found_loc = None
+        if message_text.isdigit():
+            idx = int(message_text) - 1
+            if 0 <= idx < len(locs):
+                found_loc = locs[idx][1]
+        if not found_loc:
+            # allow exact name
+            for _, name in locs:
+                if name.lower() == message_text.lower():
+                    found_loc = name
+                    break
+        if not found_loc:
+            client.send_message(to=user_id, text="❌ Не найдено. Введите номер или точное название из списка, или 0.")
+            return
+        work_data = state.get("data", {}).get("work", {})
+        work_data["location"] = found_loc
+        work_data["loc_grp"] = GROUP_FIELDS
+        state["data"]["work"] = work_data
+        set_state(user_id, "work_tractor_crop", state["data"], save_to_history=False)
+
+        lines = ["Выберите *культуру* (отправьте номер):"]
+        for i, c in enumerate(CROPS, 1):
+            lines.append(f"{i}. {c}")
+        client.send_message(to=user_id, text="\n".join(lines) + "\n\n0. 🔙 Назад")
+        return
+
+    if current_state == "work_tractor_crop":
+        if message_text == "0":
+            # Назад к выбору поля
+            locations = state.get("data", {}).get("locs", [])
+            lines = ["Выберите *поле* (отправьте номер):"]
+            for i, (_, name) in enumerate(locations, 1):
+                lines.append(f"{i}. {name}")
+            client.send_message(to=user_id, text="\n".join(lines) + "\n\n0. 🔙 Назад")
+            set_state(user_id, "work_tractor_field", state["data"], save_to_history=False)
+            return
+        if not message_text.isdigit():
+            client.send_message(to=user_id, text="❌ Введите номер культуры или 0 для возврата.")
+            return
+        choice = int(message_text)
+        if not (1 <= choice <= len(CROPS)):
+            client.send_message(to=user_id, text="❌ Неверный номер. Введите номер из списка или 0.")
+            return
+        crop = CROPS[choice - 1]
+        work_data = state.get("data", {}).get("work", {})
+        work_data["crop"] = crop
+        # Формируем activity строку с деталями
+        machinery = work_data.get("machinery", "Трактор")
+        activity_base = work_data.get("activity_base", "Работа")
+        work_data["activity"] = f"Трактор {machinery} — {activity_base} — {crop}"
+        work_data["act_grp"] = GROUP_TECH
+        # Сохраняем и переходим к вводу часов
+        state["data"]["work"] = work_data
+        set_state(user_id, "waiting_hours", state["data"], save_to_history=False)
+
+        work_date = work_data.get("date", date.today().isoformat())
+        current_sum = sum_hours_for_user_date(user_id, work_date)
+        d_str = date.fromisoformat(work_date).strftime("%d.%m.%Y")
+        text = (
+            f"📅 Дата: *{d_str}*\n"
+            f"🚜 {machinery}\n"
+            f"🔧 {activity_base}\n"
+            f"🌱 {crop}\n"
+            f"📍 {work_data.get('location','')}\n"
+            f"📊 Уже внесено: *{current_sum}* ч\n\n"
+            f"Введите *количество часов*:"
+        )
+        quick_replies = [{"id": "back_to_loc", "title": "🔙 Назад"}]
+        client.send_text_with_quick_replies(to=user_id, text=text, quick_replies=quick_replies)
+        return
+
+    if current_state == "work_kamaz_crop":
+        if message_text == "0":
+            # Назад к выбору техники
+            buttons = [
+                Button(title="🚜 Трактор", callback_data="work:type:tractor"),
+                Button(title="🚛 КамАЗ", callback_data="work:type:kamaz"),
+                Button(title="🔙 Назад", callback_data="back:prev"),
+            ]
+            client.send_message(to=user_id, text="Выберите *технику*:", buttons=buttons)
+            return
+        if not message_text.isdigit():
+            client.send_message(to=user_id, text="❌ Введите номер культуры или 0 для возврата.")
+            return
+        choice = int(message_text)
+        if not (1 <= choice <= len(CROPS_KAMAZ)):
+            client.send_message(to=user_id, text="❌ Неверный номер. Введите номер из списка или 0.")
+            return
+        crop = CROPS_KAMAZ[choice - 1]
+        work_data = state.get("data", {}).get("work", {})
+        work_data["crop"] = crop
+        work_data["work_type"] = "kamaz"
+        work_data["grp"] = GROUP_KAMAZ
+        state["data"]["work"] = work_data
+        set_state(user_id, "work_kamaz_trips", state["data"], save_to_history=False)
+        client.send_message(to=user_id, text="Введите *количество рейсов* (число):\n\n0. 🔙 Назад")
+        return
+
+    if current_state == "work_kamaz_trips":
+        if message_text == "0":
+            # Назад к выбору культуры
+            lines = ["Выберите *культуру* (отправьте номер):"]
+            for i, c in enumerate(CROPS_KAMAZ, 1):
+                lines.append(f"{i}. {c}")
+            client.send_message(to=user_id, text="\n".join(lines) + "\n\n0. 🔙 Назад")
+            set_state(user_id, "work_kamaz_crop", state["data"], save_to_history=False)
+            return
+        if not message_text.isdigit():
+            client.send_message(to=user_id, text="❌ Введите число рейсов или 0 для возврата.")
+            return
+        trips = int(message_text)
+        if trips <= 0:
+            client.send_message(to=user_id, text="❌ Число рейсов должно быть больше 0.")
+            return
+        work_data = state.get("data", {}).get("work", {})
+        work_data["trips"] = trips
+        state["data"]["work"] = work_data
+        set_state(user_id, "work_kamaz_loading", state["data"], save_to_history=False)
+
+        locations = list_locations_with_id(GROUP_FIELDS)
+        state["data"]["locs"] = locations
+        lines = ["Выберите *место погрузки* (номер):"]
+        for i, (_, name) in enumerate(locations, 1):
+            lines.append(f"{i}. {name}")
+        lines.append(f"{len(locations)+1}. Склад")
+        lines.append(f"{len(locations)+2}. Прочее")
+        client.send_message(to=user_id, text="\n".join(lines) + "\n\n0. 🔙 Назад")
+        return
+
+    if current_state == "work_kamaz_loading":
+        if message_text == "0":
+            # Назад к вводу рейсов
+            client.send_message(to=user_id, text="Введите *количество рейсов* (число):\n\n0. 🔙 Назад")
+            set_state(user_id, "work_kamaz_trips", state["data"], save_to_history=False)
+            return
+        locs = state.get("data", {}).get("locs", [])
+        extra1 = len(locs) + 1  # склад
+        extra2 = len(locs) + 2  # прочее
+        chosen = None
+        if message_text.isdigit():
+            idx = int(message_text)
+            if 1 <= idx <= len(locs):
+                chosen = locs[idx-1][1]
+            elif idx == extra1:
+                chosen = "Склад"
+            elif idx == extra2:
+                # Прочее -> свободный ввод
+                set_state(user_id, "work_kamaz_loading_custom", state["data"], save_to_history=False)
+                client.send_message(to=user_id, text="Введите *место погрузки* текстом:\n\n0. 🔙 Назад")
+                return
+        if not chosen:
+            # allow exact name
+            for _, name in locs:
+                if name.lower() == message_text.lower():
+                    chosen = name
+                    break
+            if message_text.lower() == "склад":
+                chosen = "Склад"
+        if not chosen:
+            client.send_message(to=user_id, text="❌ Не найдено. Введите номер из списка или 0.")
+            return
+        work_data = state.get("data", {}).get("work", {})
+        work_data["location"] = chosen
+        work_data["loc_grp"] = GROUP_FIELDS if chosen != "Склад" else GROUP_WARE
+        # Формируем activity строку
+        crop = work_data.get("crop", "Груз")
+        trips = work_data.get("trips")
+        work_data["activity"] = f"КамАЗ — {crop} — {trips} рейсов"
+        work_data["act_grp"] = GROUP_KAMAZ
+        state["data"]["work"] = work_data
+        set_state(user_id, "waiting_hours", state["data"], save_to_history=False)
+
+        work_date = work_data.get("date", date.today().isoformat())
+        current_sum = sum_hours_for_user_date(user_id, work_date)
+        d_str = date.fromisoformat(work_date).strftime("%d.%m.%Y")
+        text = (
+            f"📅 Дата: *{d_str}*\n"
+            f"🚛 КамАЗ\n"
+            f"📦 {crop} — {trips} рейсов\n"
+            f"📍 {chosen}\n"
+            f"📊 Уже внесено: *{current_sum}* ч\n\n"
+            f"Введите *количество часов*:"
+        )
+        quick_replies = [{"id": "back_to_loc", "title": "🔙 Назад"}]
+        client.send_text_with_quick_replies(to=user_id, text=text, quick_replies=quick_replies)
+        return
+
+    if current_state == "work_kamaz_loading_custom":
+        if message_text == "0":
+            # Назад к выбору места
+            locations = state.get("data", {}).get("locs", [])
+            lines = ["Выберите *место погрузки* (номер):"]
+            for i, (_, name) in enumerate(locations, 1):
+                lines.append(f"{i}. {name}")
+            lines.append(f"{len(locations)+1}. Склад")
+            lines.append(f"{len(locations)+2}. Прочее")
+            client.send_message(to=user_id, text="\n".join(lines) + "\n\n0. 🔙 Назад")
+            set_state(user_id, "work_kamaz_loading", state["data"], save_to_history=False)
+            return
+        work_data = state.get("data", {}).get("work", {})
+        work_data["location"] = message_text.strip()
+        work_data["loc_grp"] = GROUP_FIELDS
+        crop = work_data.get("crop", "Груз")
+        trips = work_data.get("trips")
+        work_data["activity"] = f"КамАЗ — {crop} — {trips} рейсов"
+        work_data["act_grp"] = GROUP_KAMAZ
+        state["data"]["work"] = work_data
+        set_state(user_id, "waiting_hours", state["data"], save_to_history=False)
+
+        work_date = work_data.get("date", date.today().isoformat())
+        current_sum = sum_hours_for_user_date(user_id, work_date)
+        d_str = date.fromisoformat(work_date).strftime("%d.%m.%Y")
+        text = (
+            f"📅 Дата: *{d_str}*\n"
+            f"🚛 КамАЗ\n"
+            f"📦 {crop} — {trips} рейсов\n"
+            f"📍 {work_data['location']}\n"
+            f"📊 Уже внесено: *{current_sum}* ч\n\n"
+            f"Введите *количество часов*:"
+        )
+        quick_replies = [{"id": "back_to_loc", "title": "🔙 Назад"}]
+        client.send_text_with_quick_replies(to=user_id, text=text, quick_replies=quick_replies)
+        return
+
+    if current_state == "work_manual_activity":
+        if message_text == "0":
+            # Назад к выбору типа работы
+            buttons = [
+                Button(title="🚜 Трактор", callback_data="work:type:tractor"),
+                Button(title="🚛 КамАЗ", callback_data="work:type:kamaz"),
+                Button(title="✋ Ручная", callback_data="work:type:manual"),
+                Button(title="🔙 Назад", callback_data="back:prev"),
+            ]
+            client.send_message(to=user_id, text="Выберите *тип работы*:", buttons=buttons)
+            return
+        if not message_text.isdigit():
+            client.send_message(to=user_id, text="❌ Введите номер вида работы или 0 для возврата.")
+            return
+        choice = int(message_text)
+        if not (1 <= choice <= len(ACTIVITIES_MANUAL)):
+            client.send_message(to=user_id, text="❌ Неверный номер. Введите номер из списка или 0.")
+            return
+        activity = ACTIVITIES_MANUAL[choice - 1]
+        work_data = state.get("data", {}).get("work", {})
+        work_data["activity_base"] = activity
+        work_data["grp"] = GROUP_HAND
+        work_data["work_type"] = "manual"
+        state["data"]["work"] = work_data
+        set_state(user_id, "work_manual_field", state["data"], save_to_history=False)
+
+        locations = list_locations_with_id(GROUP_FIELDS)
+        state["data"]["locs"] = locations
+        lines = ["Выберите *поле* (отправьте номер):"]
+        for i, (_, name) in enumerate(locations, 1):
+            lines.append(f"{i}. {name}")
+        client.send_message(to=user_id, text="\n".join(lines) + "\n\n0. 🔙 Назад")
+        return
+
+    if current_state == "work_manual_field":
+        if message_text == "0":
+            # Назад к выбору вида работы
+            lines = ["Выберите *вид работы* (отправьте номер):"]
+            for i, a in enumerate(ACTIVITIES_MANUAL, 1):
+                lines.append(f"{i}. {a}")
+            client.send_message(to=user_id, text="\n".join(lines) + "\n\n0. 🔙 Назад")
+            set_state(user_id, "work_manual_activity", state["data"], save_to_history=False)
+            return
+        locs = state.get("data", {}).get("locs", [])
+        found_loc = None
+        if message_text.isdigit():
+            idx = int(message_text) - 1
+            if 0 <= idx < len(locs):
+                found_loc = locs[idx][1]
+        if not found_loc:
+            for _, name in locs:
+                if name.lower() == message_text.lower():
+                    found_loc = name
+                    break
+        if not found_loc:
+            client.send_message(to=user_id, text="❌ Не найдено. Введите номер или точное название из списка, или 0.")
+            return
+        work_data = state.get("data", {}).get("work", {})
+        work_data["location"] = found_loc
+        work_data["loc_grp"] = GROUP_FIELDS
+        state["data"]["work"] = work_data
+        set_state(user_id, "work_manual_crop", state["data"], save_to_history=False)
+
+        lines = ["Выберите *культуру* (отправьте номер):"]
+        for i, c in enumerate(CROPS, 1):
+            lines.append(f"{i}. {c}")
+        client.send_message(to=user_id, text="\n".join(lines) + "\n\n0. 🔙 Назад")
+        return
+
+    if current_state == "work_manual_crop":
+        if message_text == "0":
+            # Назад к выбору поля
+            locations = state.get("data", {}).get("locs", [])
+            lines = ["Выберите *поле* (отправьте номер):"]
+            for i, (_, name) in enumerate(locations, 1):
+                lines.append(f"{i}. {name}")
+            client.send_message(to=user_id, text="\n".join(lines) + "\n\n0. 🔙 Назад")
+            set_state(user_id, "work_manual_field", state["data"], save_to_history=False)
+            return
+        if not message_text.isdigit():
+            client.send_message(to=user_id, text="❌ Введите номер культуры или 0 для возврата.")
+            return
+        choice = int(message_text)
+        if not (1 <= choice <= len(CROPS)):
+            client.send_message(to=user_id, text="❌ Неверный номер. Введите номер из списка или 0.")
+            return
+        crop = CROPS[choice - 1]
+        work_data = state.get("data", {}).get("work", {})
+        work_data["crop"] = crop
+        activity_base = work_data.get("activity_base", "Работа")
+        work_data["activity"] = f"Ручная — {activity_base} — {crop}"
+        work_data["act_grp"] = GROUP_HAND
+        state["data"]["work"] = work_data
+        set_state(user_id, "waiting_hours", state["data"], save_to_history=False)
+
+        work_date = work_data.get("date", date.today().isoformat())
+        current_sum = sum_hours_for_user_date(user_id, work_date)
+        d_str = date.fromisoformat(work_date).strftime("%d.%m.%Y")
+        text = (
+            f"📅 Дата: *{d_str}*\n"
+            f"✋ {activity_base}\n"
+            f"🌱 {crop}\n"
+            f"📍 {work_data.get('location','')}\n"
+            f"📊 Уже внесено: *{current_sum}* ч\n\n"
+            f"Введите *количество часов*:"
+        )
+        quick_replies = [{"id": "back_to_loc", "title": "🔙 Назад"}]
+        client.send_text_with_quick_replies(to=user_id, text=text, quick_replies=quick_replies)
+        return
+
     if current_state == "waiting_activity_selection":
         if message_text == "0":
             buttons = [
