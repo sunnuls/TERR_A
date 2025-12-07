@@ -286,8 +286,9 @@ def set_state(user_id: str, state: Optional[str], data: dict = None, save_to_his
     s = get_state(user_id)
     
     # Сохраняем текущее состояние в историю перед переходом (если это не очистка)
-    if save_to_history and s["state"] is not None and state is not None and back_callback:
-        save_to_history(user_id, back_callback)
+    save_to_history_func = globals().get("save_to_history")
+    if save_to_history and s["state"] is not None and state is not None and back_callback and callable(save_to_history_func):
+        save_to_history_func(user_id, back_callback)
     
     s["state"] = state
     if data is not None:
