@@ -4667,19 +4667,22 @@ def process_edit_queue(client, user_id, data):
     # Обработчики для бригадиров
     # -----------------------------
     
-    # Команда /бриг для админов - меню добавления бригадира
+    # Команда бриг: для админа - управление, для IT/бригадира - меню бригадира
     if norm_text in {"бриг", "/бриг"}:
-        if not is_admin(user_id):
-            client.send_message(to=user_id, text="❌ Нет прав. Эта команда доступна только администраторам.")
+        if is_admin(user_id):
+            buttons = [
+                Button(title="➕ Добавить бригадира", callback_data="adm:add:brigadier"),
+                Button(title="➖ Удалить бригадира", callback_data="adm:del:brigadier"),
+                Button(title="📋 Список бригадиров", callback_data="adm:list:brigadiers"),
+            ]
+            client.send_message(to=user_id, text="👷 *Управление бригадирами*:", buttons=buttons)
             return
-        
-        # Показываем меню управления бригадирами
-        buttons = [
-            Button(title="➕ Добавить бригадира", callback_data="adm:add:brigadier"),
-            Button(title="➖ Удалить бригадира", callback_data="adm:del:brigadier"),
-            Button(title="📋 Список бригадиров", callback_data="adm:list:brigadiers"),
-        ]
-        client.send_message(to=user_id, text="👷 *Управление бригадирами*:", buttons=buttons)
+        if is_it(user_id) or is_brigadier(user_id):
+            # Открываем меню бригадира
+            btn_obj = type('obj', (object,), {'from_user': msg.from_user, 'data': 'menu:brigadier'})()
+            handle_callback(client, btn_obj)
+            return
+        client.send_message(to=user_id, text="❌ Нет прав для доступа к меню бригадира.")
         return
     
     # Форма кабачков: ряды
