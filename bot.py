@@ -4762,12 +4762,15 @@ def process_edit_queue(client, user_id, data):
             if go_back(client, user_id):
                 return
         if not message_text.isdigit():
-            client.send_message(to=user_id, text="❌ Введите число (количество выкопанных рядов):\n\n0. 🔙 Назад")
+            buttons = [Button(title="🔙 Назад", callback_data="back:prev")]
+            client.send_message(to=user_id, text="❌ Введите число (количество выкопанных рядов):", buttons=buttons)
             return
         rows = int(message_text)
+        state["data"] = state.get("data", {}) or {}
         state["data"]["rows"] = rows
-        save_to_history(user_id, "brig:potato")
-        set_state(user_id, "brig_potato_field", state["data"], save_to_history=False)
+        # Сохраняем историю для корректного Back (к выбору культуры/даты)
+        back_cb = "brig:report:date:" + state["data"].get("date", "")
+        set_state(user_id, "brig_potato_field", state["data"], save_to_history=True, back_callback=back_cb)
         buttons = [Button(title="🔙 Назад", callback_data="back:prev")]
         client.send_message(to=user_id, text="Введите *название поля*:", buttons=buttons)
         return
@@ -4777,9 +4780,9 @@ def process_edit_queue(client, user_id, data):
         if message_text == "0":
             if go_back(client, user_id):
                 return
+        state["data"] = state.get("data", {}) or {}
         state["data"]["field"] = message_text
-        save_to_history(user_id, "brig:potato")
-        set_state(user_id, "brig_potato_bags", state["data"], save_to_history=False)
+        set_state(user_id, "brig_potato_bags", state["data"], save_to_history=True, back_callback="back:prev")
         buttons = [Button(title="🔙 Назад", callback_data="back:prev")]
         client.send_message(to=user_id, text="Введите *количество сеток*:", buttons=buttons)
         return
@@ -4790,12 +4793,13 @@ def process_edit_queue(client, user_id, data):
             if go_back(client, user_id):
                 return
         if not message_text.isdigit():
-            client.send_message(to=user_id, text="❌ Введите число (количество сеток):\n\n0. 🔙 Назад")
+            buttons = [Button(title="🔙 Назад", callback_data="back:prev")]
+            client.send_message(to=user_id, text="❌ Введите число (количество сеток):", buttons=buttons)
             return
         bags = int(message_text)
+        state["data"] = state.get("data", {}) or {}
         state["data"]["bags"] = bags
-        save_to_history(user_id, "brig:potato")
-        set_state(user_id, "brig_potato_workers", state["data"], save_to_history=False)
+        set_state(user_id, "brig_potato_workers", state["data"], save_to_history=True, back_callback="back:prev")
         buttons = [Button(title="🔙 Назад", callback_data="back:prev")]
         client.send_message(to=user_id, text="Введите *количество людей*:", buttons=buttons)
         return
@@ -4806,7 +4810,8 @@ def process_edit_queue(client, user_id, data):
             if go_back(client, user_id):
                 return
         if not message_text.isdigit():
-            client.send_message(to=user_id, text="❌ Введите число (количество людей):\n\n0. 🔙 Назад")
+            buttons = [Button(title="🔙 Назад", callback_data="back:prev")]
+            client.send_message(to=user_id, text="❌ Введите число (количество людей):", buttons=buttons)
             return
         workers = int(message_text)
         
