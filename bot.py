@@ -4699,6 +4699,7 @@ def process_edit_queue(client, user_id, data):
         # Страхуемся, что есть data
         state["data"] = state.get("data", {}) or {}
         state["data"]["rows"] = rows
+        logging.info(f"[BRIG] {user_id} zucchini rows set -> {rows}, data={state['data']}")
         # Сохраняем шаг для корректного Back
         back_cb = None
         if state["data"].get("date"):
@@ -4718,6 +4719,7 @@ def process_edit_queue(client, user_id, data):
                 return
         state["data"] = state.get("data", {}) or {}
         state["data"]["field"] = txt
+        logging.info(f"[BRIG] {user_id} zucchini field set -> {txt}")
         # Сохраняем в историю для back
         set_state(user_id, "brig_zucchini_workers", state["data"], save_to_history=True, back_callback="back:prev")
         buttons = [Button(title="🔙 Назад", callback_data="back:prev")]
@@ -4746,6 +4748,7 @@ def process_edit_queue(client, user_id, data):
             "work_date": work_date
         }
         state["data"]["temp_report"] = temp_report
+        logging.info(f"[BRIG] {user_id} zucchini workers set -> {workers}, report={temp_report}")
         set_state(user_id, "waiting_confirmation_brigadier", state["data"], save_to_history=True, back_callback="back:prev")
         d_str = date.fromisoformat(work_date).strftime("%d.%m.%Y")
         text = (
@@ -4777,6 +4780,7 @@ def process_edit_queue(client, user_id, data):
         rows = int(txt)
         state["data"] = state.get("data", {}) or {}
         state["data"]["rows"] = rows
+        logging.info(f"[BRIG] {user_id} potato rows set -> {rows}, data={state['data']}")
         # Сохраняем историю для корректного Back (к выбору культуры/даты)
         back_cb = None
         if state["data"].get("date"):
@@ -4796,6 +4800,7 @@ def process_edit_queue(client, user_id, data):
                 return
         state["data"] = state.get("data", {}) or {}
         state["data"]["field"] = txt
+        logging.info(f"[BRIG] {user_id} potato field set -> {txt}")
         set_state(user_id, "brig_potato_bags", state["data"], save_to_history=True, back_callback="back:prev")
         buttons = [Button(title="🔙 Назад", callback_data="back:prev")]
         client.send_message(to=user_id, text="Введите *количество сеток*:", buttons=buttons)
@@ -4814,6 +4819,7 @@ def process_edit_queue(client, user_id, data):
         bags = int(txt)
         state["data"] = state.get("data", {}) or {}
         state["data"]["bags"] = bags
+        logging.info(f"[BRIG] {user_id} potato bags set -> {bags}, data={state['data']}")
         set_state(user_id, "brig_potato_workers", state["data"], save_to_history=True, back_callback="back:prev")
         buttons = [Button(title="🔙 Назад", callback_data="back:prev")]
         client.send_message(to=user_id, text="Введите *количество людей*:", buttons=buttons)
@@ -4830,6 +4836,7 @@ def process_edit_queue(client, user_id, data):
             client.send_message(to=user_id, text="❌ Введите число (количество людей):", buttons=buttons)
             return
         workers = int(txt)
+        logging.info(f"[BRIG] {user_id} potato workers set -> {workers}")
         
         # Получаем дату из состояния
         work_date = state["data"].get("date", date.today().isoformat())
