@@ -1986,7 +1986,7 @@ def handle_callback(client, btn: CallbackObject):
             for i, m in enumerate(TRACTORS, 1):
                 lines.append(f"{i}. {m}")
             
-            client.send_message(to=user_id, text="\n".join(lines) + "\n\n0. 🔙 Назад")
+            client.send_message(to=user_id, text="\n".join(lines), buttons=[Button(title="🔙 Назад", callback_data="back:prev")])
             
         elif wtype == "kamaz":
             # КамАЗ: выбор культуры
@@ -1996,7 +1996,7 @@ def handle_callback(client, btn: CallbackObject):
             for i, c in enumerate(CROPS_KAMAZ, 1):
                 lines.append(f"{i}. {c}")
                 
-            client.send_message(to=user_id, text="\n".join(lines) + "\n\n0. 🔙 Назад")
+            client.send_message(to=user_id, text="\n".join(lines), buttons=[Button(title="🔙 Назад", callback_data="back:prev")])
             
         elif wtype == "manual":
             # Ручная: выбор вида работы
@@ -2027,7 +2027,7 @@ def handle_callback(client, btn: CallbackObject):
         for i, c in enumerate(BRIG_CROPS, 1):
             lines.append(f"{i}. {c}")
             
-        client.send_message(to=user_id, text="\n".join(lines) + "\n\n0. 🔙 Назад")
+        client.send_message(to=user_id, text="\n".join(lines), buttons=[Button(title="🔙 Назад", callback_data="back:prev")])
     
     elif data.startswith("work:locgrp:"):
         lg = data.split(":")[2]
@@ -3084,7 +3084,7 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
             lines = ["Выберите *вид деятельности* (отправьте номер):"]
             for i, a in enumerate(ACTIVITIES_TRACTOR, 1):
                 lines.append(f"{i}. {a}")
-            client.send_message(to=user_id, text="\n".join(lines) + "\n\n0. 🔙 Назад")
+            client.send_message(to=user_id, text="\n".join(lines), buttons=[Button(title="🔙 Назад", callback_data="back:prev")])
             set_state(user_id, "work_tractor_activity", state["data"], save_to_history=False)
             return
         if len(message_text.strip()) < 2:
@@ -3101,7 +3101,7 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
         lines = ["Выберите *поле* (отправьте номер):"]
         for i, (_, name) in enumerate(locations, 1):
             lines.append(f"{i}. {name}")
-        client.send_message(to=user_id, text="\n".join(lines) + "\n\n0. 🔙 Назад")
+        client.send_message(to=user_id, text="\n".join(lines), buttons=[Button(title="🔙 Назад", callback_data="back:prev")])
         return
 
     if current_state == "work_tractor_machinery":
@@ -3116,11 +3116,16 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
             client.send_message(to=user_id, text="Выберите *технику*:", buttons=buttons)
             return
         if not message_text.isdigit():
-            client.send_message(to=user_id, text="❌ Введите номер трактора или 0 для возврата.")
+            client.send_message(to=user_id, text="❌ Введите номер трактора или используйте кнопку Назад.", buttons=[Button(title="🔙 Назад", callback_data="back:prev")])
             return
         choice = int(message_text)
         if not (1 <= choice <= len(TRACTORS)):
-            client.send_message(to=user_id, text="❌ Неверный номер. Введите номер из списка или 0.")
+            client.send_message(to=user_id, text="❌ Неверный номер. Введите номер из списка или нажмите Назад.", buttons=[Button(title="🔙 Назад", callback_data="back:prev")])
+            return
+        # Прочее -> свободный ввод
+        if choice == len(TRACTORS) and TRACTORS[choice - 1].lower() == "прочее":
+            set_state(user_id, "work_tractor_machinery_custom", state["data"], save_to_history=False)
+            client.send_message(to=user_id, text="📝 Введите *трактор* текстом:", buttons=[Button(title="🔙 Назад", callback_data="back:prev")])
             return
         machinery = TRACTORS[choice - 1]
         work_data = state.get("data", {}).get("work", {})
@@ -3133,29 +3138,58 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
         lines = ["Выберите *вид деятельности* (отправьте номер):"]
         for i, a in enumerate(ACTIVITIES_TRACTOR, 1):
             lines.append(f"{i}. {a}")
-        client.send_message(to=user_id, text="\n".join(lines) + "\n\n0. 🔙 Назад")
+        client.send_message(to=user_id, text="\n".join(lines), buttons=[Button(title="🔙 Назад", callback_data="back:prev")])
         return
 
+    if current_state == "work_tractor_machinery_custom":
+        if message_text == "0":
+            # Назад к списку тракторов
+            lines = ["Выберите *трактор* (отправьте номер):"]
+            for i, m in enumerate(TRACTORS, 1):
+                lines.append(f"{i}. {m}")
+            client.send_message(
+                to=user_id,
+                text="\n".join(lines),
+                buttons=[Button(title="🔙 Назад", callback_data="back:prev")]
+            )
+            set_state(user_id, "work_tractor_machinery", state["data"], save_to_history=False)
+            return
+        if len(message_text.strip()) < 2:
+            client.send_message(to=user_id, text="❌ Введите название трактора (мин. 2 символа) или нажмите Назад.", buttons=[Button(title="🔙 Назад", callback_data="back:prev")])
+            return
+        machinery = message_text.strip()
+        work_data = state.get("data", {}).get("work", {})
+        work_data["machinery"] = machinery
+        work_data["date"] = state.get("data", {}).get("date", date.today().isoformat())
+        work_data["work_type"] = "tractor"
+        state["data"]["work"] = work_data
+        set_state(user_id, "work_tractor_activity", state["data"], save_to_history=False)
+
+        lines = ["Выберите *вид деятельности* (отправьте номер):"]
+        for i, a in enumerate(ACTIVITIES_TRACTOR, 1):
+            lines.append(f"{i}. {a}")
+        client.send_message(to=user_id, text="\n".join(lines), buttons=[Button(title="🔙 Назад", callback_data="back:prev")])
+        return
     if current_state == "work_tractor_activity":
         if message_text == "0":
             # Назад к выбору трактора
             lines = ["Выберите *трактор* (отправьте номер):"]
             for i, m in enumerate(TRACTORS, 1):
                 lines.append(f"{i}. {m}")
-            client.send_message(to=user_id, text="\n".join(lines) + "\n\n0. 🔙 Назад")
+            client.send_message(to=user_id, text="\n".join(lines), buttons=[Button(title="🔙 Назад", callback_data="back:prev")])
             set_state(user_id, "work_tractor_machinery", state["data"], save_to_history=False)
             return
         if not message_text.isdigit():
-            client.send_message(to=user_id, text="❌ Введите номер вида деятельности или 0 для возврата.")
+            client.send_message(to=user_id, text="❌ Введите номер вида деятельности или используйте кнопку Назад.", buttons=[Button(title="🔙 Назад", callback_data="back:prev")])
             return
         choice = int(message_text)
         if not (1 <= choice <= len(ACTIVITIES_TRACTOR)):
-            client.send_message(to=user_id, text="❌ Неверный номер. Введите номер из списка или 0.")
+            client.send_message(to=user_id, text="❌ Неверный номер. Введите номер из списка или нажмите Назад.", buttons=[Button(title="🔙 Назад", callback_data="back:prev")])
             return
         # Прочее -> свободный ввод
         if choice == len(ACTIVITIES_TRACTOR) and ACTIVITIES_TRACTOR[choice - 1].lower() == "прочее":
             set_state(user_id, "work_tractor_activity_custom", state["data"], save_to_history=False)
-            client.send_message(to=user_id, text="📝 Введите *вид деятельности* текстом:\n\n0. 🔙 Назад")
+            client.send_message(to=user_id, text="📝 Введите *вид деятельности* текстом:", buttons=[Button(title="🔙 Назад", callback_data="back:prev")])
             return
         activity = ACTIVITIES_TRACTOR[choice - 1]
         work_data = state.get("data", {}).get("work", {})
@@ -3169,7 +3203,7 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
         lines = ["Выберите *поле* (отправьте номер):"]
         for i, (_, name) in enumerate(locations, 1):
             lines.append(f"{i}. {name}")
-        client.send_message(to=user_id, text="\n".join(lines) + "\n\n0. 🔙 Назад")
+        client.send_message(to=user_id, text="\n".join(lines), buttons=[Button(title="🔙 Назад", callback_data="back:prev")])
         return
 
     if current_state == "work_tractor_field":
@@ -3205,7 +3239,7 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
         lines = ["Выберите *культуру* (отправьте номер):"]
         for i, c in enumerate(CROPS, 1):
             lines.append(f"{i}. {c}")
-        client.send_message(to=user_id, text="\n".join(lines) + "\n\n0. 🔙 Назад")
+        client.send_message(to=user_id, text="\n".join(lines), buttons=[Button(title="🔙 Назад", callback_data="back:prev")])
         return
 
     if current_state == "work_tractor_crop":
@@ -3228,7 +3262,7 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
         # Прочее -> свободный ввод
         if choice == len(CROPS) and CROPS[choice - 1].lower() == "прочее":
             set_state(user_id, "work_tractor_crop_custom", state["data"], save_to_history=False)
-            client.send_message(to=user_id, text="📝 Введите *культуру* текстом:\n\n0. 🔙 Назад")
+            client.send_message(to=user_id, text="📝 Введите *культуру* текстом:", buttons=[Button(title="🔙 Назад", callback_data="back:prev")])
             return
         crop = CROPS[choice - 1]
         work_data = state.get("data", {}).get("work", {})
@@ -3307,15 +3341,15 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
             client.send_message(to=user_id, text="Выберите *технику*:", buttons=buttons)
             return
         if not message_text.isdigit():
-            client.send_message(to=user_id, text="❌ Введите номер культуры или 0 для возврата.")
+            client.send_message(to=user_id, text="❌ Введите номер культуры или используйте кнопку Назад.", buttons=[Button(title="🔙 Назад", callback_data="back:prev")])
             return
         choice = int(message_text)
         if not (1 <= choice <= len(CROPS_KAMAZ)):
-            client.send_message(to=user_id, text="❌ Неверный номер. Введите номер из списка или 0.")
+            client.send_message(to=user_id, text="❌ Неверный номер. Введите номер из списка или нажмите Назад.", buttons=[Button(title="🔙 Назад", callback_data="back:prev")])
             return
         if choice == len(CROPS_KAMAZ) and CROPS_KAMAZ[choice - 1].lower() == "прочее":
             set_state(user_id, "work_kamaz_crop_custom", state["data"], save_to_history=False)
-            client.send_message(to=user_id, text="📝 Введите *культуру* текстом:\n\n0. 🔙 Назад")
+            client.send_message(to=user_id, text="📝 Введите *культуру* текстом:", buttons=[Button(title="🔙 Назад", callback_data="back:prev")])
             return
         crop = CROPS_KAMAZ[choice - 1]
         work_data = state.get("data", {}).get("work", {})
@@ -3324,7 +3358,7 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
         work_data["grp"] = GROUP_KAMAZ
         state["data"]["work"] = work_data
         set_state(user_id, "work_kamaz_trips", state["data"], save_to_history=False)
-        client.send_message(to=user_id, text="Введите *количество рейсов* (число):\n\n0. 🔙 Назад")
+        client.send_message(to=user_id, text="Введите *количество рейсов* (число):", buttons=[Button(title="🔙 Назад", callback_data="back:prev")])
         return
 
     if current_state == "work_kamaz_trips":
@@ -3355,7 +3389,7 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
             lines.append(f"{i}. {name}")
         lines.append(f"{len(locations)+1}. Склад")
         lines.append(f"{len(locations)+2}. Прочее")
-        client.send_message(to=user_id, text="\n".join(lines) + "\n\n0. 🔙 Назад")
+        client.send_message(to=user_id, text="\n".join(lines), buttons=[Button(title="🔙 Назад", callback_data="back:prev")])
         return
 
     if current_state == "work_kamaz_loading":
@@ -3377,7 +3411,7 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
             elif idx == extra2:
                 # Прочее -> свободный ввод
                 set_state(user_id, "work_kamaz_loading_custom", state["data"], save_to_history=False)
-                client.send_message(to=user_id, text="Введите *место погрузки* текстом:\n\n0. 🔙 Назад")
+                client.send_message(to=user_id, text="Введите *место погрузки* текстом:", buttons=[Button(title="🔙 Назад", callback_data="back:prev")])
                 return
         if not chosen:
             # allow exact name
@@ -3425,7 +3459,7 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
                 lines.append(f"{i}. {name}")
             lines.append(f"{len(locations)+1}. Склад")
             lines.append(f"{len(locations)+2}. Прочее")
-            client.send_message(to=user_id, text="\n".join(lines) + "\n\n0. 🔙 Назад")
+            client.send_message(to=user_id, text="\n".join(lines), buttons=[Button(title="🔙 Назад", callback_data="back:prev")])
             set_state(user_id, "work_kamaz_loading", state["data"], save_to_history=False)
             return
         work_data = state.get("data", {}).get("work", {})
@@ -3472,7 +3506,7 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
         work_data["grp"] = GROUP_KAMAZ
         state["data"]["work"] = work_data
         set_state(user_id, "work_kamaz_trips", state["data"], save_to_history=False)
-        client.send_message(to=user_id, text="Введите *количество рейсов* (число):\n\n0. 🔙 Назад")
+        client.send_message(to=user_id, text="Введите *количество рейсов* (число):", buttons=[Button(title="🔙 Назад", callback_data="back:prev")])
         return
 
     if current_state == "work_manual_activity":
@@ -3495,7 +3529,7 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
             return
         if choice == len(ACTIVITIES_MANUAL) and ACTIVITIES_MANUAL[choice - 1].lower() == "прочее":
             set_state(user_id, "work_manual_activity_custom", state["data"], save_to_history=False)
-            client.send_message(to=user_id, text="📝 Введите *вид работы* текстом:\n\n0. 🔙 Назад")
+            client.send_message(to=user_id, text="📝 Введите *вид работы* текстом:", buttons=[Button(title="🔙 Назад", callback_data="back:prev")])
             return
         activity = ACTIVITIES_MANUAL[choice - 1]
         work_data = state.get("data", {}).get("work", {})
@@ -3510,7 +3544,7 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
         lines = ["Выберите *поле* (отправьте номер):"]
         for i, (_, name) in enumerate(locations, 1):
             lines.append(f"{i}. {name}")
-        client.send_message(to=user_id, text="\n".join(lines) + "\n\n0. 🔙 Назад")
+        client.send_message(to=user_id, text="\n".join(lines), buttons=[Button(title="🔙 Назад", callback_data="back:prev")])
         return
 
     if current_state == "work_manual_activity_custom":
@@ -3519,11 +3553,11 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
             lines = ["Выберите *вид работы* (отправьте номер):"]
             for i, a in enumerate(ACTIVITIES_MANUAL, 1):
                 lines.append(f"{i}. {a}")
-            client.send_message(to=user_id, text="\n".join(lines) + "\n\n0. 🔙 Назад")
+            client.send_message(to=user_id, text="\n".join(lines), buttons=[Button(title="🔙 Назад", callback_data="back:prev")])
             set_state(user_id, "work_manual_activity", state["data"], save_to_history=False)
             return
         if len(message_text.strip()) < 2:
-            client.send_message(to=user_id, text="❌ Введите название работы (минимум 2 символа) или 0 для возврата.")
+            client.send_message(to=user_id, text="❌ Введите название работы (минимум 2 символа) или нажмите Назад.", buttons=[Button(title="🔙 Назад", callback_data="back:prev")])
             return
         work_data = state.get("data", {}).get("work", {})
         work_data["activity_base"] = message_text.strip()
@@ -3537,7 +3571,7 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
         lines = ["Выберите *поле* (отправьте номер):"]
         for i, (_, name) in enumerate(locations, 1):
             lines.append(f"{i}. {name}")
-        client.send_message(to=user_id, text="\n".join(lines) + "\n\n0. 🔙 Назад")
+        client.send_message(to=user_id, text="\n".join(lines), buttons=[Button(title="🔙 Назад", callback_data="back:prev")])
         return
 
     if current_state == "work_manual_field":
@@ -3572,7 +3606,7 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
         lines = ["Выберите *культуру* (отправьте номер):"]
         for i, c in enumerate(CROPS, 1):
             lines.append(f"{i}. {c}")
-        client.send_message(to=user_id, text="\n".join(lines) + "\n\n0. 🔙 Назад")
+        client.send_message(to=user_id, text="\n".join(lines), buttons=[Button(title="🔙 Назад", callback_data="back:prev")])
         return
 
     if current_state == "work_manual_crop":
@@ -3594,7 +3628,7 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
             return
         if choice == len(CROPS) and CROPS[choice - 1].lower() == "прочее":
             set_state(user_id, "work_manual_crop_custom", state["data"], save_to_history=False)
-            client.send_message(to=user_id, text="📝 Введите *культуру* текстом:\n\n0. 🔙 Назад")
+            client.send_message(to=user_id, text="📝 Введите *культуру* текстом:", buttons=[Button(title="🔙 Назад", callback_data="back:prev")])
             return
         crop = CROPS[choice - 1]
         work_data = state.get("data", {}).get("work", {})
@@ -3626,11 +3660,11 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
             lines = ["Выберите *культуру* (отправьте номер):"]
             for i, c in enumerate(CROPS, 1):
                 lines.append(f"{i}. {c}")
-            client.send_message(to=user_id, text="\n".join(lines) + "\n\n0. 🔙 Назад")
+            client.send_message(to=user_id, text="\n".join(lines), buttons=[Button(title="🔙 Назад", callback_data="back:prev")])
             set_state(user_id, "work_manual_crop", state["data"], save_to_history=False)
             return
         if len(message_text.strip()) < 2:
-            client.send_message(to=user_id, text="❌ Введите название культуры (минимум 2 символа) или 0 для возврата.")
+            client.send_message(to=user_id, text="❌ Введите название культуры (минимум 2 символа) или нажмите Назад.", buttons=[Button(title="🔙 Назад", callback_data="back:prev")])
             return
         crop = message_text.strip()
         work_data = state.get("data", {}).get("work", {})
@@ -3677,7 +3711,8 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
                 set_state(user_id, "waiting_custom_activity_input", state["data"])
                 client.send_message(
                     to=user_id, 
-                    text="📝 Введите *название работы* (от 3 до 50 символов):\n\n0. 🔙 Назад"
+                    text="📝 Введите *название работы* (от 3 до 50 символов):",
+                    buttons=[Button(title="🔙 Назад", callback_data="back:prev")]
                 )
                 return
         
@@ -3724,20 +3759,19 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
             for i, (aid, name) in enumerate(activities, 1):
                 lines.append(f"{i}. {name}")
             lines.append(f"{len(activities) + 1}. 📝 Прочее")
-            lines.append("\n0. 🔙 Назад")
             
             text = "\n".join(lines)
-            client.send_message(to=user_id, text=text)
+            client.send_message(to=user_id, text=text, buttons=[Button(title="🔙 Назад", callback_data="back:prev")])
             return
         
         # Валидация пользовательского ввода
         custom_activity = message_text.strip()
         if len(custom_activity) < 3:
-            client.send_message(to=user_id, text="❌ Слишком короткое название. Минимум 3 символа.\n\n0. 🔙 Назад")
+            client.send_message(to=user_id, text="❌ Слишком короткое название. Минимум 3 символа.", buttons=[Button(title="🔙 Назад", callback_data="back:prev")])
             return
         
         if len(custom_activity) > 50:
-            client.send_message(to=user_id, text="❌ Слишком длинное название. Максимум 50 символов.\n\n0. 🔙 Назад")
+            client.send_message(to=user_id, text="❌ Слишком длинное название. Максимум 50 символов.", buttons=[Button(title="🔙 Назад", callback_data="back:prev")])
             return
         
         # Сохраняем пользовательский ввод
