@@ -4687,14 +4687,15 @@ def process_edit_queue(client, user_id, data):
     # Форма кабачков: ряды
     if current_state == "brig_zucchini_rows":
         # Обработка ввода рядов для кабачков
-        if message_text == "0":
+        txt = message_text.strip()
+        if txt == "0":
             if go_back(client, user_id):
                 return
-        if not message_text.isdigit():
+        if not txt.isdigit():
             buttons = [Button(title="🔙 Назад", callback_data="back:prev")]
             client.send_message(to=user_id, text="❌ Введите число (количество рядов):", buttons=buttons)
             return
-        rows = int(message_text)
+        rows = int(txt)
         # Страхуемся, что есть data
         state["data"] = state.get("data", {}) or {}
         state["data"]["rows"] = rows
@@ -4711,11 +4712,12 @@ def process_edit_queue(client, user_id, data):
     
     # Форма кабачков: поле
     if current_state == "brig_zucchini_field":
-        if message_text == "0":
+        txt = message_text.strip()
+        if txt == "0":
             if go_back(client, user_id):
                 return
         state["data"] = state.get("data", {}) or {}
-        state["data"]["field"] = message_text
+        state["data"]["field"] = txt
         # Сохраняем в историю для back
         set_state(user_id, "brig_zucchini_workers", state["data"], save_to_history=True, back_callback="back:prev")
         buttons = [Button(title="🔙 Назад", callback_data="back:prev")]
@@ -4724,14 +4726,15 @@ def process_edit_queue(client, user_id, data):
     
     # Форма кабачков: люди (финальный шаг)
     if current_state == "brig_zucchini_workers":
-        if message_text == "0":
+        txt = message_text.strip()
+        if txt == "0":
             if go_back(client, user_id):
                 return
-        if not message_text.isdigit():
+        if not txt.isdigit():
             buttons = [Button(title="🔙 Назад", callback_data="back:prev")]
             client.send_message(to=user_id, text="❌ Введите число (количество людей):", buttons=buttons)
             return
-        workers = int(message_text)
+        workers = int(txt)
         state["data"] = state.get("data", {}) or {}
         work_date = state["data"].get("date", date.today().isoformat())
         temp_report = {
@@ -4763,14 +4766,15 @@ def process_edit_queue(client, user_id, data):
     
     # Форма картошки: ряды
     if current_state == "brig_potato_rows":
-        if message_text == "0":
+        txt = message_text.strip()
+        if txt == "0":
             if go_back(client, user_id):
                 return
-        if not message_text.isdigit():
+        if not txt.isdigit():
             buttons = [Button(title="🔙 Назад", callback_data="back:prev")]
             client.send_message(to=user_id, text="❌ Введите число (количество выкопанных рядов):", buttons=buttons)
             return
-        rows = int(message_text)
+        rows = int(txt)
         state["data"] = state.get("data", {}) or {}
         state["data"]["rows"] = rows
         # Сохраняем историю для корректного Back (к выбору культуры/даты)
@@ -4786,11 +4790,12 @@ def process_edit_queue(client, user_id, data):
 
     # Форма картошки: поле
     if current_state == "brig_potato_field":
-        if message_text == "0":
+        txt = message_text.strip()
+        if txt == "0":
             if go_back(client, user_id):
                 return
         state["data"] = state.get("data", {}) or {}
-        state["data"]["field"] = message_text
+        state["data"]["field"] = txt
         set_state(user_id, "brig_potato_bags", state["data"], save_to_history=True, back_callback="back:prev")
         buttons = [Button(title="🔙 Назад", callback_data="back:prev")]
         client.send_message(to=user_id, text="Введите *количество сеток*:", buttons=buttons)
@@ -4798,14 +4803,15 @@ def process_edit_queue(client, user_id, data):
     
     # Форма картошки: сетки
     if current_state == "brig_potato_bags":
-        if message_text == "0":
+        txt = message_text.strip()
+        if txt == "0":
             if go_back(client, user_id):
                 return
-        if not message_text.isdigit():
+        if not txt.isdigit():
             buttons = [Button(title="🔙 Назад", callback_data="back:prev")]
             client.send_message(to=user_id, text="❌ Введите число (количество сеток):", buttons=buttons)
             return
-        bags = int(message_text)
+        bags = int(txt)
         state["data"] = state.get("data", {}) or {}
         state["data"]["bags"] = bags
         set_state(user_id, "brig_potato_workers", state["data"], save_to_history=True, back_callback="back:prev")
@@ -4815,14 +4821,15 @@ def process_edit_queue(client, user_id, data):
     
     # Форма картошки: люди (финальный шаг)
     if current_state == "brig_potato_workers":
-        if message_text == "0":
+        txt = message_text.strip()
+        if txt == "0":
             if go_back(client, user_id):
                 return
-        if not message_text.isdigit():
+        if not txt.isdigit():
             buttons = [Button(title="🔙 Назад", callback_data="back:prev")]
             client.send_message(to=user_id, text="❌ Введите число (количество людей):", buttons=buttons)
             return
-        workers = int(message_text)
+        workers = int(txt)
         
         # Получаем дату из состояния
         work_date = state["data"].get("date", date.today().isoformat())
