@@ -2615,7 +2615,8 @@ def handle_callback(client, btn: CallbackObject):
     
     elif data == "menu:brigadier":
         # Показать меню выбора действия (вместо даты)
-        if not is_brigadier(user_id):
+        # IT и админам тоже разрешаем вход для тестов/поддержки
+        if not (is_brigadier(user_id) or is_it(user_id) or is_admin(user_id)):
             client.send_message(to=user_id, text="❌ У вас нет прав бригадира")
             return
         # Сохраняем текущее состояние в историю перед переходом
