@@ -4684,6 +4684,10 @@ def process_edit_queue(client, user_id, data):
         client.send_message(to=user_id, text="❌ Нет прав для доступа к меню бригадира.")
         return
     
+    # Debug log for brig states
+    if current_state and current_state.startswith("brig_"):
+        logging.info(f"[BRIG] state_entry user={user_id} state={current_state} text='{message_text.strip()}' data={state.get('data', {})}")
+    
     # Форма кабачков: ряды
     if current_state == "brig_zucchini_rows":
         # Обработка ввода рядов для кабачков
