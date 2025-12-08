@@ -4687,28 +4687,34 @@ def process_edit_queue(client, user_id, data):
     # Форма кабачков: ряды
     if current_state == "brig_zucchini_rows":
         # Обработка ввода рядов для кабачков
-        txt = message_text.strip()
-        if txt == "0":
-            if go_back(client, user_id):
+        try:
+            txt = message_text.strip()
+            logging.info(f"[BRIG] enter zucchini_rows user={user_id} text='{txt}' state={state.get('data', {})}")
+            if txt == "0":
+                if go_back(client, user_id):
+                    return
+            if not txt.isdigit():
+                buttons = [Button(title="🔙 Назад", callback_data="back:prev")]
+                client.send_message(to=user_id, text="❌ Введите число (количество рядов):", buttons=buttons)
                 return
-        if not txt.isdigit():
+            rows = int(txt)
+            # Страхуемся, что есть data
+            state["data"] = state.get("data", {}) or {}
+            state["data"]["rows"] = rows
+            logging.info(f"[BRIG] {user_id} zucchini rows set -> {rows}, data={state['data']}")
+            # Сохраняем шаг для корректного Back
+            back_cb = None
+            if state["data"].get("date"):
+                back_cb = f"brig:report:date:{state['data']['date']}"
+            else:
+                back_cb = "menu:brigadier"
+            set_state(user_id, "brig_zucchini_field", state["data"], save_to_history=True, back_callback=back_cb)
             buttons = [Button(title="🔙 Назад", callback_data="back:prev")]
-            client.send_message(to=user_id, text="❌ Введите число (количество рядов):", buttons=buttons)
-            return
-        rows = int(txt)
-        # Страхуемся, что есть data
-        state["data"] = state.get("data", {}) or {}
-        state["data"]["rows"] = rows
-        logging.info(f"[BRIG] {user_id} zucchini rows set -> {rows}, data={state['data']}")
-        # Сохраняем шаг для корректного Back
-        back_cb = None
-        if state["data"].get("date"):
-            back_cb = f"brig:report:date:{state['data']['date']}"
-        else:
-            back_cb = "menu:brigadier"
-        set_state(user_id, "brig_zucchini_field", state["data"], save_to_history=True, back_callback=back_cb)
-        buttons = [Button(title="🔙 Назад", callback_data="back:prev")]
-        client.send_message(to=user_id, text="Введите *название поля*:", buttons=buttons)
+            client.send_message(to=user_id, text="Введите *название поля*:", buttons=buttons)
+        except Exception as e:
+            logging.exception(f"[BRIG] error in zucchini_rows for user {user_id}: {e}")
+            buttons = [Button(title="🔙 Назад", callback_data="back:prev")]
+            client.send_message(to=user_id, text="❌ Ошибка при обработке рядов, попробуйте еще раз.", buttons=buttons)
         return
     
     # Форма кабачков: поле
