@@ -177,7 +177,7 @@ AUTO_EXPORT_CRON = os.getenv("AUTO_EXPORT_CRON", "0 9 * * 1")
 
 # Тракторы
 TRACTORS = [
-    "JD7(с)", "JD7(н)", "GD8", "GD6", "Оранжевый", "Погрузчик", "Комбайн", "Прочее"
+    "JD7(с)", "JD7(н)", "JD8", "JD6", "Оранжевый", "Погрузчик", "Комбайн", "Прочее"
 ]
 
 # Работы для трактора
@@ -204,9 +204,16 @@ CROPS_KAMAZ = CROPS + ["Навоз"]
 # Мы будем формировать их динамически из списка locations + "Склад"
 
 DEFAULT_FIELDS = [
-    "Северное","Фазенда","5 га","58 га","Фермерское","Сад",
-    "Чеки №1","Чеки №2","Чеки №3","Рогачи (б)","Рогачи(М)",
-    "Владимирова Аренда","МТФ",
+    "58 га",
+    "Северное",
+    "Фазенда",
+    "Фермерское",
+    "МТФ",
+    "Рогачи (б)",
+    "Рогачи(М)",
+    "Чеки Куропятника",
+    "Аренда Третьяк",
+    "Прочее",
 ]
 
 # Оставляем старые списки для совместимости если где-то используются, 
@@ -497,6 +504,12 @@ def init_db():
                 )
             c.execute("UPDATE activities SET grp=? WHERE (grp IS NULL OR grp='')", (GROUP_HAND,))
 
+        # Очистка устаревших локаций
+        obsolete_locations = ["Чеки №1", "Чеки №2", "Чеки №3", "5 га", "Сад", "Владимирова Аренда"]
+        placeholders = ",".join("?" * len(obsolete_locations))
+        if placeholders:
+            c.execute(f"DELETE FROM locations WHERE name IN ({placeholders})", (*obsolete_locations,))
+
         for name in DEFAULT_FIELDS:
             c.execute("INSERT OR IGNORE INTO locations(name, grp) VALUES (?, ?)", (name, GROUP_FIELDS))
         c.execute("INSERT OR IGNORE INTO locations(name, grp) VALUES (?, ?)", ("Склад", GROUP_WARE))
@@ -580,7 +593,22 @@ def list_locations(grp: str) -> List[str]:
 
 def list_locations_with_id(grp: str) -> List[Tuple[int, str]]:
     with connect() as con, closing(con.cursor()) as c:
-        rows = c.execute("SELECT id, name FROM locations WHERE grp=? ORDER BY name", (grp,)).fetchall()
+        # Кастомный порядок: «Аренда Третьяк» перед «Прочее», «Прочее» всегда последним
+        rows = c.execute(
+            """
+            SELECT id, name
+            FROM locations
+            WHERE grp=?
+            ORDER BY 
+                CASE 
+                    WHEN name='Аренда Третьяк' THEN 98
+                    WHEN name='Прочее' THEN 99
+                    ELSE 0
+                END,
+                name
+            """,
+            (grp,)
+        ).fetchall()
         return [(r[0], r[1]) for r in rows]
 
 def get_location_name(loc_id: int) -> Optional[Tuple[str, str]]:
@@ -2202,16 +2230,40 @@ def handle_callback(client, btn: CallbackObject):
             hours=temp_report.get("hours")
         )
         
-        d_str = date.fromisoformat(temp_report.get("work_date")).strftime("%d.%m.%Y")
-        
-        text = (
-            f"✅ *Отчет сохранен*\n\n"
-            f"📅 Дата: *{d_str}*\n"
-            f"Работа: *{temp_report.get('activity')}*\n"
-            f"Место: *{temp_report.get('location')}*\n"
-            f"Часы: *{temp_report.get('hours')}*\n"
-            f"ID: `#{report_id}`"
-        )
+        d_str = date.fromisoformat(temp_report.get("work_date")).strftime("%d.%m.%y")
+
+        lines = [
+            f"1. Дата - {d_str}",
+            f"2. Часы - {temp_report.get('hours', '—')}",
+        ]
+
+        work_type = temp_report.get("work_type")
+        if work_type == "tractor":
+            lines.extend([
+                "3. Трактор",
+                f"4. {temp_report.get('machinery', '—')}",
+                f"5. Работа - {temp_report.get('activity_base', temp_report.get('activity', '—'))}",
+                f"6. Культура - {temp_report.get('crop', '—')}",
+                f"7. Место - {temp_report.get('location', '—')}",
+            ])
+        elif work_type == "kamaz":
+            lines.extend([
+                "3. КамАЗ",
+                f"4. Груз - {temp_report.get('crop', '—')}",
+                f"5. Рейсы - {temp_report.get('trips', '—')}",
+                f"6. Место - {temp_report.get('location', '—')}",
+            ])
+        else:
+            lines.extend([
+                "3. Ручная работа",
+                f"4. Работа - {temp_report.get('activity_base', temp_report.get('activity', '—'))}",
+                f"5. Культура - {temp_report.get('crop', '—')}",
+                f"6. Место - {temp_report.get('location', '—')}",
+            ])
+
+        lines.append(f"ID: #{report_id}")
+
+        text = "✅ *Отчет сохранен*\n\n" + "\n".join(lines)
         
         clear_state(user_id)
         client.send_message(to=user_id, text=text)
@@ -4199,22 +4251,49 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
             "activity": work_data.get("activity"),
             "act_grp": work_data.get("grp"),
             "work_date": work_date,
-            "hours": hours
+            "hours": hours,
+            "work_type": work_data.get("work_type"),
+            "machinery": work_data.get("machinery"),
+            "activity_base": work_data.get("activity_base") or work_data.get("activity"),
+            "crop": work_data.get("crop"),
+            "trips": work_data.get("trips"),
         }
         
         state["data"]["temp_report"] = temp_report
         set_state(user_id, "waiting_confirmation_worker", state["data"], save_to_history=True, back_callback="work:manual:crop" if work_data.get("work_type") == "manual" else None)
         
-        d_str = date.fromisoformat(temp_report["work_date"]).strftime("%d.%m.%Y")
+        d_str = date.fromisoformat(temp_report["work_date"]).strftime("%d.%m.%y")
         
-        text = (
-            f"📋 *Проверьте данные*\n\n"
-            f"📅 Дата: *{d_str}*\n"
-            f"Работа: *{temp_report['activity']}*\n"
-            f"Место: *{temp_report['location']}*\n"
-            f"Часы: *{hours}*\n\n"
-            f"Все верно?"
-        )
+        lines = [
+            f"1. Дата - {d_str}",
+            f"2. Часы - {hours}",
+        ]
+
+        work_type = temp_report.get("work_type")
+        if work_type == "tractor":
+            lines.extend([
+                "3. Трактор",
+                f"4. {temp_report.get('machinery', '—')}",
+                f"5. Работа - {temp_report.get('activity_base', temp_report.get('activity', '—'))}",
+                f"6. Культура - {temp_report.get('crop', '—')}",
+                f"7. Место - {temp_report.get('location', '—')}",
+            ])
+        elif work_type == "kamaz":
+            lines.extend([
+                "3. КамАЗ",
+                f"4. Груз - {temp_report.get('crop', '—')}",
+                f"5. Рейсы - {temp_report.get('trips', '—')}",
+                f"6. Место - {temp_report.get('location', '—')}",
+            ])
+        else:
+            lines.extend([
+                "3. Ручная работа",
+                f"4. Работа - {temp_report.get('activity_base', temp_report.get('activity', '—'))}",
+                f"5. Культура - {temp_report.get('crop', '—')}",
+                f"6. Место - {temp_report.get('location', '—')}",
+            ])
+
+        text = "📋 *Проверьте данные*\n\n" + "\n".join(lines) + "\n\nВсе верно?"
         
         buttons = [
             Button(title="✅ Подтвердить", callback_data="confirm:worker"),
