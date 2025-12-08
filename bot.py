@@ -2057,8 +2057,11 @@ def handle_callback(client, btn: CallbackObject):
     elif data.startswith("work:type:"):
         wtype = data.split(":")[2]
         state = get_state(user_id)
-        # Preserve date
-        work_date = state["data"].get("date")
+        # Preserve date for all work types (tractor / kamaz / manual)
+        work_date = state["data"].get("date") or date.today().isoformat()
+        work_data = state.get("data", {}).get("work", {})
+        work_data["date"] = work_date
+        state["data"]["work"] = work_data
         state["data"]["work_type"] = wtype
         
         if wtype == "tractor":
