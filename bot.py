@@ -2069,11 +2069,20 @@ def handle_callback(client, btn: CallbackObject):
     elif data == "work:grp:tech":
         # Intermediate step: Technique -> Tractor/KamAZ choice
         state = get_state(user_id)
-        work_data = state.get("data", {}) if state else {}
-        work_date = work_data.get("date", date.today().isoformat())
+        data_payload = state.get("data", {}) if state else {}
+        work_date = data_payload.get("date", date.today().isoformat())
+        # Сохраняем префил часов, если он уже введен
+        prefilled_hours = data_payload.get("prefilled_hours")
+        work_data = data_payload.get("work", {}) or {}
+        work_data["date"] = work_date
+        new_data = {
+            "date": work_date,
+            "work": work_data,
+            "prefilled_hours": prefilled_hours,
+        }
         
         # Save current state so Back works (returns to date selection/menu:work)
-        set_state(user_id, "work_pick_type", {"date": work_date}, back_callback="menu:work")
+        set_state(user_id, "work_pick_type", new_data, back_callback="menu:work")
         
         buttons = [
             Button(title="🚜 Трактор", callback_data="work:type:tractor"),
