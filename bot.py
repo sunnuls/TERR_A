@@ -4883,15 +4883,14 @@ def process_edit_queue(client, user_id, data):
             # Подстрахуем, чтобы дальше не было KeyError
             if "work_type" not in state["data"]:
                 state["data"]["work_type"] = "Кабачок"
+            if "date" not in state["data"]:
+                state["data"]["date"] = date.today().isoformat()
+            work_date = state["data"]["date"]
             state["data"]["rows"] = rows
             state["data"]["brig_stage"] = "brig_zucchini_rows"
             logging.info(f"[BRIG] {user_id} zucchini rows set -> {rows}, data={state['data']}")
             # Сохраняем шаг для корректного Back
-            back_cb = None
-            if state["data"].get("date"):
-                back_cb = f"brig:report:date:{state['data']['date']}"
-            else:
-                back_cb = "menu:brigadier"
+            back_cb = f"brig:report:date:{work_date}"
             set_state(user_id, "brig_zucchini_field", state["data"], save_to_history=True, back_callback=back_cb)
             buttons = [Button(title="🔙 Назад", callback_data="back:prev")]
             client.send_message(to=user_id, text="Введите *название поля*:", buttons=buttons)
