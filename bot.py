@@ -2923,20 +2923,6 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
             
             client.send_message(to=user_id, text=text)
             return
-        elif norm_text in {"briq", "бриг", "/бриг"}:
-            # Сохраняем текущее состояние в историю перед переходом
-            save_to_history(user_id, "menu:more")
-            
-            # Проверка прав: IT, Admin или Brigadier
-            if not (is_it(user_id) or is_admin(user_id) or is_brigadier(user_id)):
-                 client.send_message(to=user_id, text="❌ У вас нет прав для доступа к меню бригадира.")
-                 return
-
-            # Показываем бригадирское меню (НОВОЕ)
-            data_obj = type('obj', (object,), {'data': 'menu:brigadier'})()
-            btn_obj = type('obj', (object,), {'from_user': msg.from_user, 'data': 'menu:brigadier'})()
-            handle_callback(client, btn_obj)
-            return
         elif norm_text == "rname":
             set_state(user_id, "waiting_name", save_to_history=False)
             client.send_message(to=user_id, text="Введите *Фамилию Имя* для изменения:")
@@ -2951,6 +2937,26 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
             ]
             client.send_message(to=user_id, text="📊 *Статистика (IT/Admin)*\n\nВыберите категорию:", buttons=buttons)
             return
+    
+    # Команда briq: открыть меню бригадира
+    if norm_text in {"briq", "/briq"}:
+        save_to_history(user_id, "menu:more")
+        if not (is_brigadier(user_id) or is_it(user_id) or is_admin(user_id)):
+            client.send_message(to=user_id, text="❌ У вас нет прав для доступа к меню бригадира.")
+            return
+        btn_obj = type('obj', (object,), {'from_user': msg.from_user, 'data': 'menu:brigadier'})()
+        handle_callback(client, btn_obj)
+        return
+
+    # Команда бриг: управление бригадирами (админ/IT)
+    if norm_text in {"бриг", "/бриг"}:
+        save_to_history(user_id, "menu:more")
+        if not (is_admin(user_id) or is_it(user_id)):
+            client.send_message(to=user_id, text="❌ У вас нет прав для управления бригадирами.")
+            return
+        btn_obj = type('obj', (object,), {'from_user': msg.from_user, 'data': 'adm:menu:brigadiers'})()
+        handle_callback(client, btn_obj)
+        return
 
     # Команда для проверки IT роли и показа меню (обрабатывается ДО команды menu)
     if norm_text in {"it", "ит", "itmenu", "итменю", "checkit", "чекит"}:
