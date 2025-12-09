@@ -5155,7 +5155,11 @@ def process_edit_queue(client, user_id, data):
             return
         
         idx = int(message_text) - 1
-        brigadiers = state["data"].get("brigadiers_list", [])
+        brigadiers = (state.get("data") or {}).get("brigadiers_list") or get_all_brigadiers()
+        if not brigadiers:
+            client.send_message(to=user_id, text="❌ Нет сохраненного списка бригадиров. Попробуйте снова через меню.")
+            clear_state(user_id)
+            return
         
         if not (0 <= idx < len(brigadiers)):
             client.send_message(to=user_id, text="❌ Неверный номер.")
@@ -5164,10 +5168,14 @@ def process_edit_queue(client, user_id, data):
         brig = brigadiers[idx]
         brig_id, brig_uname, brig_fname, _, _ = brig
         
-        if remove_brigadier(brig_id):
-            client.send_message(to=user_id, text=f"✅ Бригадир *{brig_fname or brig_uname}* удален.")
-        else:
-            client.send_message(to=user_id, text="❌ Не удалось удалить.")
+        try:
+            if remove_brigadier(brig_id):
+                client.send_message(to=user_id, text=f"✅ Бригадир *{brig_fname or brig_uname}* удален.")
+            else:
+                client.send_message(to=user_id, text="❌ Не удалось удалить.")
+        except Exception as e:
+            logging.error(f"adm_wait_brigadier_del remove error for {brig_id}: {e}")
+            client.send_message(to=user_id, text="❌ Ошибка при удалении. Попробуйте позже.")
         
         clear_state(user_id)
         u = get_user(user_id)
