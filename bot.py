@@ -3152,6 +3152,65 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
     
     logging.info(f"📩 Message from {user_id}: '{message_text}' | State: {current_state}")
 
+    # Хелпер: собрать подтверждение для работяги (трактор/КамАЗ/ручная)
+    def _build_worker_confirmation(client, user_id: str, state: dict, hours: int):
+        work_data = state["data"].get("work", {})
+        work_date = work_data.get("date", date.today().isoformat())
+        temp_report = {
+            "location": work_data.get("location"),
+            "loc_grp": work_data.get("loc_grp"),
+            "activity": work_data.get("activity"),
+            "act_grp": work_data.get("grp"),
+            "work_date": work_date,
+            "hours": hours,
+            "work_type": work_data.get("work_type"),
+            "machinery": work_data.get("machinery"),
+            "activity_base": work_data.get("activity_base") or work_data.get("activity"),
+            "crop": work_data.get("crop"),
+            "trips": work_data.get("trips"),
+        }
+
+        state["data"]["temp_report"] = temp_report
+        back_callback = "work:manual:crop" if work_data.get("work_type") == "manual" else None
+        set_state(user_id, "waiting_confirmation_worker", state["data"], save_to_history=True, back_callback=back_callback)
+
+        d_str = date.fromisoformat(temp_report["work_date"]).strftime("%d.%m.%y")
+        lines = [
+            f"1. Дата - {d_str}",
+            f"2. Часы - {temp_report.get('hours', '—')}",
+        ]
+
+        work_type = temp_report.get("work_type")
+        if work_type == "tractor":
+            lines.extend([
+                "3. Трактор",
+                f"4. {temp_report.get('machinery', '—')}",
+                f"5. Работа - {temp_report.get('activity_base', temp_report.get('activity', '—'))}",
+                f"6. Культура - {temp_report.get('crop', '—')}",
+                f"7. Место - {temp_report.get('location', '—')}",
+            ])
+        elif work_type == "kamaz":
+            lines.extend([
+                "3. КамАЗ",
+                f"4. Груз - {temp_report.get('crop', '—')}",
+                f"5. Рейсы - {temp_report.get('trips', '—')}",
+                f"6. Место - {temp_report.get('location', '—')}",
+            ])
+        else:
+            lines.extend([
+                "3. Ручная работа",
+                f"4. Работа - {temp_report.get('activity_base', temp_report.get('activity', '—'))}",
+                f"5. Культура - {temp_report.get('crop', '—')}",
+                f"6. Место - {temp_report.get('location', '—')}",
+            ])
+
+        text = "📋 *Проверьте данные*\n\n" + "\n".join(lines) + "\n\nВсе верно?"
+        buttons = [
+            Button(title="✅ Подтвердить", callback_data="confirm:worker"),
+            Button(title="✏️ Изменить", callback_data="edit:worker")
+        ]
+        client.send_message(to=user_id, text=text, buttons=buttons)
+
     if current_state == "waiting_name":
         # Feature 5: Mandatory Full Name Registration
         parts = message_text.strip().split()
@@ -4201,65 +4260,6 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
         ]
         client.send_message(to=user_id, text=text, buttons=buttons)
         return
-
-    # Хелпер для подтверждения отчета работяги
-    def _build_worker_confirmation(client, user_id: str, state: dict, hours: int):
-        work_data = state["data"].get("work", {})
-        work_date = work_data.get("date", date.today().isoformat())
-        temp_report = {
-            "location": work_data.get("location"),
-            "loc_grp": work_data.get("loc_grp"),
-            "activity": work_data.get("activity"),
-            "act_grp": work_data.get("grp"),
-            "work_date": work_date,
-            "hours": hours,
-            "work_type": work_data.get("work_type"),
-            "machinery": work_data.get("machinery"),
-            "activity_base": work_data.get("activity_base") or work_data.get("activity"),
-            "crop": work_data.get("crop"),
-            "trips": work_data.get("trips"),
-        }
-
-        state["data"]["temp_report"] = temp_report
-        back_callback = "work:manual:crop" if work_data.get("work_type") == "manual" else None
-        set_state(user_id, "waiting_confirmation_worker", state["data"], save_to_history=True, back_callback=back_callback)
-
-        d_str = date.fromisoformat(temp_report["work_date"]).strftime("%d.%m.%y")
-        lines = [
-            f"1. Дата - {d_str}",
-            f"2. Часы - {temp_report.get('hours', '—')}",
-        ]
-
-        work_type = temp_report.get("work_type")
-        if work_type == "tractor":
-            lines.extend([
-                "3. Трактор",
-                f"4. {temp_report.get('machinery', '—')}",
-                f"5. Работа - {temp_report.get('activity_base', temp_report.get('activity', '—'))}",
-                f"6. Культура - {temp_report.get('crop', '—')}",
-                f"7. Место - {temp_report.get('location', '—')}",
-            ])
-        elif work_type == "kamaz":
-            lines.extend([
-                "3. КамАЗ",
-                f"4. Груз - {temp_report.get('crop', '—')}",
-                f"5. Рейсы - {temp_report.get('trips', '—')}",
-                f"6. Место - {temp_report.get('location', '—')}",
-            ])
-        else:
-            lines.extend([
-                "3. Ручная работа",
-                f"4. Работа - {temp_report.get('activity_base', temp_report.get('activity', '—'))}",
-                f"5. Культура - {temp_report.get('crop', '—')}",
-                f"6. Место - {temp_report.get('location', '—')}",
-            ])
-
-        text = "📋 *Проверьте данные*\n\n" + "\n".join(lines) + "\n\nВсе верно?"
-        buttons = [
-            Button(title="✅ Подтвердить", callback_data="confirm:worker"),
-            Button(title="✏️ Изменить", callback_data="edit:worker")
-        ]
-        client.send_message(to=user_id, text=text, buttons=buttons)
 
     if current_state == "waiting_hours_prefill":
         if message_text == "0":
