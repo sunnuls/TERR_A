@@ -5150,22 +5150,35 @@ def process_edit_queue(client, user_id, data):
             clear_state(user_id)
             return
         
-        if not message_text.isdigit():
-            client.send_message(to=user_id, text="❌ Введите номер бригадира из списка или 0 для возврата.")
-            return
-        
-        idx = int(message_text) - 1
         brigadiers = (state.get("data") or {}).get("brigadiers_list") or get_all_brigadiers()
         if not brigadiers:
             client.send_message(to=user_id, text="❌ Нет сохраненного списка бригадиров. Попробуйте снова через меню.")
             clear_state(user_id)
             return
-        
-        if not (0 <= idx < len(brigadiers)):
-            client.send_message(to=user_id, text="❌ Неверный номер.")
-            return
-        
-        brig = brigadiers[idx]
+
+        user_input = message_text.strip()
+        brig = None
+
+        # Вариант 1: пользователь ввел номер из списка (1,2,3,...)
+        if user_input.isdigit():
+            idx = int(user_input) - 1
+            if 0 <= idx < len(brigadiers):
+                brig = brigadiers[idx]
+            else:
+                client.send_message(to=user_id, text="❌ Неверный номер. Введите номер из списка или телефон бригадира.")
+                return
+        else:
+            # Вариант 2: пользователь ввел номер телефона/WA ID бригадира
+            normalized_input = _normalize_phone(user_input)
+            for b in brigadiers:
+                brig_uid = b[0]
+                if _normalize_phone(brig_uid) == normalized_input:
+                    brig = b
+                    break
+            if not brig:
+                client.send_message(to=user_id, text="❌ Не найден бригадир. Введите номер из списка или телефон/ID бригадира.")
+                return
+
         brig_id, brig_uname, brig_fname, _, _ = brig
         
         try:
