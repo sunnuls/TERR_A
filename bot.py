@@ -2714,14 +2714,14 @@ def handle_callback(client, btn: CallbackObject):
 
     elif data.startswith("brig:report:type:zucchini:"):
         selected_date = data.split(":")[4]
-        work_payload = {"work_type": "Кабачок", "date": selected_date}
+        work_payload = {"work_type": "Кабачок", "date": selected_date, "brig_stage": "brig_zucchini_rows"}
         set_state(user_id, "brig_zucchini_rows", work_payload, save_to_history=False)
         buttons = [Button(title="🔙 Назад", callback_data=f"brig:report:date:{selected_date}")]
         client.send_message(to=user_id, text=f"🥒 *Кабачок* ({selected_date})\n\nВведите *количество рядов*:", buttons=buttons)
 
     elif data.startswith("brig:report:type:potato:"):
         selected_date = data.split(":")[4]
-        work_payload = {"work_type": "Картошка", "date": selected_date}
+        work_payload = {"work_type": "Картошка", "date": selected_date, "brig_stage": "brig_potato_rows"}
         set_state(user_id, "brig_potato_rows", work_payload, save_to_history=False)
         buttons = [Button(title="🔙 Назад", callback_data=f"brig:report:date:{selected_date}")]
         client.send_message(to=user_id, text=f"🥔 *Картошка* ({selected_date})\n\nВведите *количество выкопанных рядов*:", buttons=buttons)
@@ -3151,6 +3151,13 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
     current_state = state.get("state")
     
     logging.info(f"📩 Message from {user_id}: '{message_text}' | State: {current_state}")
+
+    # Восстановление шага бригадира, если состояние потерялось, но данные остались
+    brig_stage = state.get("data", {}).get("brig_stage")
+    if not current_state and brig_stage in {"brig_zucchini_rows", "brig_potato_rows"}:
+        set_state(user_id, brig_stage, state.get("data", {}), save_to_history=False)
+        current_state = brig_stage
+        state = get_state(user_id)
 
     # Хелпер: собрать подтверждение для работяги (трактор/КамАЗ/ручная)
     def _build_worker_confirmation(client, user_id: str, state: dict, hours: int):
@@ -4874,6 +4881,7 @@ def process_edit_queue(client, user_id, data):
             # Страхуемся, что есть data
             state["data"] = state.get("data", {}) or {}
             state["data"]["rows"] = rows
+        state["data"]["brig_stage"] = "brig_zucchini_rows"
             logging.info(f"[BRIG] {user_id} zucchini rows set -> {rows}, data={state['data']}")
             # Сохраняем шаг для корректного Back
             back_cb = None
@@ -4959,6 +4967,7 @@ def process_edit_queue(client, user_id, data):
         rows = int(txt)
         state["data"] = state.get("data", {}) or {}
         state["data"]["rows"] = rows
+        state["data"]["brig_stage"] = "brig_potato_rows"
         logging.info(f"[BRIG] {user_id} potato rows set -> {rows}, data={state['data']}")
         # Сохраняем историю для корректного Back (к выбору культуры/даты)
         back_cb = None
