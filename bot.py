@@ -902,7 +902,7 @@ def check_reminders():
                     # Send reminder
                     buttons = [
                         Button(title="🚜 Заполнить ОТД", callback_data="menu:work"),
-                        Button(title="😴 Я сегодня не работаю", callback_data="reminder:cancel"),
+                        Button(title="😴 Сегодня выходной", callback_data="reminder:cancel"),
                         Button(title="✅ Я уже заполнил ОТД сегодня", callback_data="reminder:done"),
                     ]
                     try:
@@ -2760,11 +2760,17 @@ def handle_callback(client, btn: CallbackObject):
         today_str = date.today().isoformat()
         set_reminder_status(user_id, today_str, "disabled")
         client.send_message(to=user_id, text="🔕 Уведомления на сегодня отключены.")
+        u = get_user(user_id)
+        clear_state(user_id)
+        show_main_menu(client, user_id, u)
     
     elif data == "reminder:done":
         today_str = date.today().isoformat()
         set_reminder_status(user_id, today_str, "disabled")
         client.send_message(to=user_id, text="✅ Спасибо, отмечено. Уведомления на сегодня отключены.")
+        u = get_user(user_id)
+        clear_state(user_id)
+        show_main_menu(client, user_id, u)
 
     elif data == "brig:stats:week":
         text = get_brigadier_stats(user_id, 'week')
