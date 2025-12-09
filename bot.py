@@ -4894,6 +4894,7 @@ def process_edit_queue(client, user_id, data):
             set_state(user_id, "brig_zucchini_field", state["data"], save_to_history=True, back_callback=back_cb)
             buttons = [Button(title="🔙 Назад", callback_data="back:prev")]
             client.send_message(to=user_id, text="Введите *название поля*:", buttons=buttons)
+            logging.info(f"[BRIG] prompt field sent to {user_id}")
         except Exception as e:
             logging.exception(f"[BRIG] error in zucchini_rows for user {user_id}: {e}")
             buttons = [Button(title="🔙 Назад", callback_data="back:prev")]
