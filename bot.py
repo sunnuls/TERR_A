@@ -4881,7 +4881,7 @@ def process_edit_queue(client, user_id, data):
             # Страхуемся, что есть data
             state["data"] = state.get("data", {}) or {}
             state["data"]["rows"] = rows
-        state["data"]["brig_stage"] = "brig_zucchini_rows"
+            state["data"]["brig_stage"] = "brig_zucchini_rows"
             logging.info(f"[BRIG] {user_id} zucchini rows set -> {rows}, data={state['data']}")
             # Сохраняем шаг для корректного Back
             back_cb = None
