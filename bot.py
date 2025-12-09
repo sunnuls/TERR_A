@@ -902,7 +902,8 @@ def check_reminders():
                     # Send reminder
                     buttons = [
                         Button(title="🚜 Заполнить ОТД", callback_data="menu:work"),
-                        Button(title="😴 Я сегодня не работаю", callback_data="reminder:cancel")
+                        Button(title="😴 Я сегодня не работаю", callback_data="reminder:cancel"),
+                        Button(title="✅ Я уже заполнил ОТД сегодня", callback_data="reminder:done"),
                     ]
                     try:
                         wa.send_message(to=uid, text="🔔 *Не забудьте заполнить ОТД!*", buttons=buttons)
@@ -2055,15 +2056,15 @@ def handle_callback(client, btn: CallbackObject):
         selected_date = data.split(":")[2]
         # Сохраняем текущее состояние в историю перед переходом
         save_to_history(user_id, "menu:work")
-        set_state(user_id, "pick_work_group", {"date": selected_date}, save_to_history=False)
-        
-        buttons = [
-            Button(title="Техника", callback_data="work:grp:tech"),
-            Button(title="Ручная", callback_data="work:type:manual"),
-            Button(title="🔙 Назад", callback_data="back:prev"),
-        ]
+        current_sum = sum_hours_for_user_date(user_id, selected_date)
         d_str = date.fromisoformat(selected_date).strftime("%d.%m.%Y")
-        client.send_message(to=user_id, text=f"📅 Дата: *{d_str}*\n\nВыберите *тип работы*:", buttons=buttons)
+        text = (
+            f"📅 Дата: *{d_str}*\n"
+            f"📊 Уже внесено: *{current_sum}* ч\n\n"
+            f"Введите *количество часов*:\n\n0. 🔙 Назад"
+        )
+        set_state(user_id, "waiting_hours_prefill", {"date": selected_date, "work": {"date": selected_date}}, save_to_history=False)
+        client.send_message(to=user_id, text=text)
 
     elif data == "work:grp:tech":
         # Intermediate step: Technique -> Tractor/KamAZ choice
@@ -2168,20 +2169,24 @@ def handle_callback(client, btn: CallbackObject):
             # Сохраняем текущее состояние в историю перед переходом
             acts_kind = state["data"].get("acts_kind", "tech")
             save_to_history(user_id, f"work:grp:{acts_kind}")
-            set_state(user_id, "waiting_hours", state["data"], save_to_history=False)
-            
-            # Calculate current hours for today
-            work_date = state["data"].get("work", {}).get("date", date.today().isoformat())
-            current_sum = sum_hours_for_user_date(user_id, work_date)
-            d_str = date.fromisoformat(work_date).strftime("%d.%m.%Y")
-            
-            text = (
-                f"📅 Дата: *{d_str}*\n"
-                f"📊 Уже внесено: *{current_sum}* ч\n\n"
-                f"Введите *количество часов*:"
-            )
-            quick_replies = [{"id": "back_to_loc", "title": "🔙 Back"}]
-            client.send_text_with_quick_replies(to=user_id, text=text, quick_replies=quick_replies)
+            prefilled = state["data"].get("prefilled_hours")
+            if prefilled:
+                _build_worker_confirmation(client, user_id, state, prefilled)
+            else:
+                set_state(user_id, "waiting_hours", state["data"], save_to_history=False)
+                
+                # Calculate current hours for today
+                work_date = state["data"].get("work", {}).get("date", date.today().isoformat())
+                current_sum = sum_hours_for_user_date(user_id, work_date)
+                d_str = date.fromisoformat(work_date).strftime("%d.%m.%Y")
+                
+                text = (
+                    f"📅 Дата: *{d_str}*\n"
+                    f"📊 Уже внесено: *{current_sum}* ч\n\n"
+                    f"Введите *количество часов*:"
+                )
+                quick_replies = [{"id": "back_to_loc", "title": "🔙 Back"}]
+                client.send_text_with_quick_replies(to=user_id, text=text, quick_replies=quick_replies)
             
         else:
             state["data"]["work"] = work_data
@@ -2746,6 +2751,11 @@ def handle_callback(client, btn: CallbackObject):
         today_str = date.today().isoformat()
         set_reminder_status(user_id, today_str, "disabled")
         client.send_message(to=user_id, text="🔕 Уведомления на сегодня отключены.")
+    
+    elif data == "reminder:done":
+        today_str = date.today().isoformat()
+        set_reminder_status(user_id, today_str, "disabled")
+        client.send_message(to=user_id, text="✅ Спасибо, отмечено. Уведомления на сегодня отключены.")
 
     elif data == "brig:stats:week":
         text = get_brigadier_stats(user_id, 'week')
@@ -3415,22 +3425,26 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
         work_data["act_grp"] = GROUP_TECH
         # Сохраняем и переходим к вводу часов
         state["data"]["work"] = work_data
-        set_state(user_id, "waiting_hours", state["data"], save_to_history=True, back_callback="work:tractor:crop")
+        prefilled = state["data"].get("prefilled_hours")
+        if prefilled:
+            _build_worker_confirmation(client, user_id, state, prefilled)
+        else:
+            set_state(user_id, "waiting_hours", state["data"], save_to_history=True, back_callback="work:tractor:crop")
 
-        work_date = work_data.get("date", date.today().isoformat())
-        current_sum = sum_hours_for_user_date(user_id, work_date)
-        d_str = date.fromisoformat(work_date).strftime("%d.%m.%Y")
-        text = (
-            f"📅 Дата: *{d_str}*\n"
-            f"🚜 {machinery}\n"
-            f"🔧 {activity_base}\n"
-            f"🌱 {crop}\n"
-            f"📍 {work_data.get('location','')}\n"
-            f"📊 Уже внесено: *{current_sum}* ч\n\n"
-            f"Введите *количество часов*:"
-        )
-        quick_replies = [{"id": "back_to_loc", "title": "🔙 Назад"}]
-        client.send_text_with_quick_replies(to=user_id, text=text, quick_replies=quick_replies)
+            work_date = work_data.get("date", date.today().isoformat())
+            current_sum = sum_hours_for_user_date(user_id, work_date)
+            d_str = date.fromisoformat(work_date).strftime("%d.%m.%Y")
+            text = (
+                f"📅 Дата: *{d_str}*\n"
+                f"🚜 {machinery}\n"
+                f"🔧 {activity_base}\n"
+                f"🌱 {crop}\n"
+                f"📍 {work_data.get('location','')}\n"
+                f"📊 Уже внесено: *{current_sum}* ч\n\n"
+                f"Введите *количество часов*:"
+            )
+            quick_replies = [{"id": "back_to_loc", "title": "🔙 Назад"}]
+            client.send_text_with_quick_replies(to=user_id, text=text, quick_replies=quick_replies)
         return
 
     if current_state == "work_tractor_crop_custom":
@@ -3453,22 +3467,26 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
         work_data["activity"] = f"Трактор {machinery} — {activity_base} — {crop}"
         work_data["act_grp"] = GROUP_TECH
         state["data"]["work"] = work_data
-        set_state(user_id, "waiting_hours", state["data"], save_to_history=True, back_callback="work:tractor:crop")
+        prefilled = state["data"].get("prefilled_hours")
+        if prefilled:
+            _build_worker_confirmation(client, user_id, state, prefilled)
+        else:
+            set_state(user_id, "waiting_hours", state["data"], save_to_history=True, back_callback="work:tractor:crop")
 
-        work_date = work_data.get("date", date.today().isoformat())
-        current_sum = sum_hours_for_user_date(user_id, work_date)
-        d_str = date.fromisoformat(work_date).strftime("%d.%m.%Y")
-        text = (
-            f"📅 Дата: *{d_str}*\n"
-            f"🚜 {machinery}\n"
-            f"🔧 {activity_base}\n"
-            f"🌱 {crop}\n"
-            f"📍 {work_data.get('location','')}\n"
-            f"📊 Уже внесено: *{current_sum}* ч\n\n"
-            f"Введите *количество часов*:"
-        )
-        quick_replies = [{"id": "back_to_loc", "title": "🔙 Назад"}]
-        client.send_text_with_quick_replies(to=user_id, text=text, quick_replies=quick_replies)
+            work_date = work_data.get("date", date.today().isoformat())
+            current_sum = sum_hours_for_user_date(user_id, work_date)
+            d_str = date.fromisoformat(work_date).strftime("%d.%m.%Y")
+            text = (
+                f"📅 Дата: *{d_str}*\n"
+                f"🚜 {machinery}\n"
+                f"🔧 {activity_base}\n"
+                f"🌱 {crop}\n"
+                f"📍 {work_data.get('location','')}\n"
+                f"📊 Уже внесено: *{current_sum}* ч\n\n"
+                f"Введите *количество часов*:"
+            )
+            quick_replies = [{"id": "back_to_loc", "title": "🔙 Назад"}]
+            client.send_text_with_quick_replies(to=user_id, text=text, quick_replies=quick_replies)
         return
 
     if current_state == "work_kamaz_crop":
@@ -3574,21 +3592,25 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
         work_data["activity"] = f"КамАЗ — {crop} — {trips} рейсов"
         work_data["act_grp"] = GROUP_KAMAZ
         state["data"]["work"] = work_data
-        set_state(user_id, "waiting_hours", state["data"], save_to_history=False)
+        prefilled = state["data"].get("prefilled_hours")
+        if prefilled:
+            _build_worker_confirmation(client, user_id, state, prefilled)
+        else:
+            set_state(user_id, "waiting_hours", state["data"], save_to_history=False)
 
-        work_date = work_data.get("date", date.today().isoformat())
-        current_sum = sum_hours_for_user_date(user_id, work_date)
-        d_str = date.fromisoformat(work_date).strftime("%d.%m.%Y")
-        text = (
-            f"📅 Дата: *{d_str}*\n"
-            f"🚛 КамАЗ\n"
-            f"📦 {crop} — {trips} рейсов\n"
-            f"📍 {chosen}\n"
-            f"📊 Уже внесено: *{current_sum}* ч\n\n"
-            f"Введите *количество часов*:"
-        )
-        quick_replies = [{"id": "back_to_loc", "title": "🔙 Назад"}]
-        client.send_text_with_quick_replies(to=user_id, text=text, quick_replies=quick_replies)
+            work_date = work_data.get("date", date.today().isoformat())
+            current_sum = sum_hours_for_user_date(user_id, work_date)
+            d_str = date.fromisoformat(work_date).strftime("%d.%m.%Y")
+            text = (
+                f"📅 Дата: *{d_str}*\n"
+                f"🚛 КамАЗ\n"
+                f"📦 {crop} — {trips} рейсов\n"
+                f"📍 {chosen}\n"
+                f"📊 Уже внесено: *{current_sum}* ч\n\n"
+                f"Введите *количество часов*:"
+            )
+            quick_replies = [{"id": "back_to_loc", "title": "🔙 Назад"}]
+            client.send_text_with_quick_replies(to=user_id, text=text, quick_replies=quick_replies)
         return
 
     if current_state == "work_kamaz_loading_custom":
@@ -3611,21 +3633,25 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
         work_data["activity"] = f"КамАЗ — {crop} — {trips} рейсов"
         work_data["act_grp"] = GROUP_KAMAZ
         state["data"]["work"] = work_data
-        set_state(user_id, "waiting_hours", state["data"], save_to_history=False)
+        prefilled = state["data"].get("prefilled_hours")
+        if prefilled:
+            _build_worker_confirmation(client, user_id, state, prefilled)
+        else:
+            set_state(user_id, "waiting_hours", state["data"], save_to_history=False)
 
-        work_date = work_data.get("date", date.today().isoformat())
-        current_sum = sum_hours_for_user_date(user_id, work_date)
-        d_str = date.fromisoformat(work_date).strftime("%d.%m.%Y")
-        text = (
-            f"📅 Дата: *{d_str}*\n"
-            f"🚛 КамАЗ\n"
-            f"📦 {crop} — {trips} рейсов\n"
-            f"📍 {work_data['location']}\n"
-            f"📊 Уже внесено: *{current_sum}* ч\n\n"
-            f"Введите *количество часов*:"
-        )
-        quick_replies = [{"id": "back_to_loc", "title": "🔙 Назад"}]
-        client.send_text_with_quick_replies(to=user_id, text=text, quick_replies=quick_replies)
+            work_date = work_data.get("date", date.today().isoformat())
+            current_sum = sum_hours_for_user_date(user_id, work_date)
+            d_str = date.fromisoformat(work_date).strftime("%d.%m.%Y")
+            text = (
+                f"📅 Дата: *{d_str}*\n"
+                f"🚛 КамАЗ\n"
+                f"📦 {crop} — {trips} рейсов\n"
+                f"📍 {work_data['location']}\n"
+                f"📊 Уже внесено: *{current_sum}* ч\n\n"
+                f"Введите *количество часов*:"
+            )
+            quick_replies = [{"id": "back_to_loc", "title": "🔙 Назад"}]
+            client.send_text_with_quick_replies(to=user_id, text=text, quick_replies=quick_replies)
         return
 
     if current_state == "work_kamaz_crop_custom":
@@ -3778,21 +3804,25 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
         work_data["activity"] = f"Ручная — {activity_base} — {crop}"
         work_data["act_grp"] = GROUP_HAND
         state["data"]["work"] = work_data
-        set_state(user_id, "waiting_hours", state["data"], save_to_history=True, back_callback="work:manual:crop")
+        prefilled = state["data"].get("prefilled_hours")
+        if prefilled:
+            _build_worker_confirmation(client, user_id, state, prefilled)
+        else:
+            set_state(user_id, "waiting_hours", state["data"], save_to_history=True, back_callback="work:manual:crop")
 
-        work_date = work_data.get("date", date.today().isoformat())
-        current_sum = sum_hours_for_user_date(user_id, work_date)
-        d_str = date.fromisoformat(work_date).strftime("%d.%m.%Y")
-        text = (
-            f"📅 Дата: *{d_str}*\n"
-            f"✋ {activity_base}\n"
-            f"🌱 {crop}\n"
-            f"📍 {work_data.get('location','')}\n"
-            f"📊 Уже внесено: *{current_sum}* ч\n\n"
-            f"Введите *количество часов*:"
-        )
-        quick_replies = [{"id": "back_to_loc", "title": "🔙 Назад"}]
-        client.send_text_with_quick_replies(to=user_id, text=text, quick_replies=quick_replies)
+            work_date = work_data.get("date", date.today().isoformat())
+            current_sum = sum_hours_for_user_date(user_id, work_date)
+            d_str = date.fromisoformat(work_date).strftime("%d.%m.%Y")
+            text = (
+                f"📅 Дата: *{d_str}*\n"
+                f"✋ {activity_base}\n"
+                f"🌱 {crop}\n"
+                f"📍 {work_data.get('location','')}\n"
+                f"📊 Уже внесено: *{current_sum}* ч\n\n"
+                f"Введите *количество часов*:"
+            )
+            quick_replies = [{"id": "back_to_loc", "title": "🔙 Назад"}]
+            client.send_text_with_quick_replies(to=user_id, text=text, quick_replies=quick_replies)
         return
 
     if current_state == "work_manual_crop_custom":
@@ -3814,21 +3844,25 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
         work_data["activity"] = f"Ручная — {activity_base} — {crop}"
         work_data["act_grp"] = GROUP_HAND
         state["data"]["work"] = work_data
-        set_state(user_id, "waiting_hours", state["data"], save_to_history=True, back_callback="work:manual:crop")
+        prefilled = state["data"].get("prefilled_hours")
+        if prefilled:
+            _build_worker_confirmation(client, user_id, state, prefilled)
+        else:
+            set_state(user_id, "waiting_hours", state["data"], save_to_history=True, back_callback="work:manual:crop")
 
-        work_date = work_data.get("date", date.today().isoformat())
-        current_sum = sum_hours_for_user_date(user_id, work_date)
-        d_str = date.fromisoformat(work_date).strftime("%d.%m.%Y")
-        text = (
-            f"📅 Дата: *{d_str}*\n"
-            f"✋ {activity_base}\n"
-            f"🌱 {crop}\n"
-            f"📍 {work_data.get('location','')}\n"
-            f"📊 Уже внесено: *{current_sum}* ч\n\n"
-            f"Введите *количество часов*:"
-        )
-        quick_replies = [{"id": "back_to_loc", "title": "🔙 Назад"}]
-        client.send_text_with_quick_replies(to=user_id, text=text, quick_replies=quick_replies)
+            work_date = work_data.get("date", date.today().isoformat())
+            current_sum = sum_hours_for_user_date(user_id, work_date)
+            d_str = date.fromisoformat(work_date).strftime("%d.%m.%Y")
+            text = (
+                f"📅 Дата: *{d_str}*\n"
+                f"✋ {activity_base}\n"
+                f"🌱 {crop}\n"
+                f"📍 {work_data.get('location','')}\n"
+                f"📊 Уже внесено: *{current_sum}* ч\n\n"
+                f"Введите *количество часов*:"
+            )
+            quick_replies = [{"id": "back_to_loc", "title": "🔙 Назад"}]
+            client.send_text_with_quick_replies(to=user_id, text=text, quick_replies=quick_replies)
         return
 
     if current_state == "waiting_activity_selection":
@@ -3962,24 +3996,26 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
         work_data["location"] = location_name
         state["data"]["work"] = work_data
         
-        # New flow: Date is already selected, go to hours
-        # Сохраняем текущее состояние в историю перед переходом
-        acts_kind = state["data"].get("acts_kind", "tech")
-        save_to_history(user_id, f"work:grp:{acts_kind}")
-        set_state(user_id, "waiting_hours", state["data"], save_to_history=False)
-        
-        # Calculate current hours
-        work_date = state["data"].get("work", {}).get("date", date.today().isoformat())
-        current_sum = sum_hours_for_user_date(user_id, work_date)
-        d_str = date.fromisoformat(work_date).strftime("%d.%m.%Y")
-        
-        text = (
-            f"📅 Дата: *{d_str}*\n"
-            f"📊 Уже внесено: *{current_sum}* ч\n\n"
-            f"Введите *количество часов*:"
-        )
-        quick_replies = [{"id": "back_to_loc", "title": "🔙 Назад"}]
-        client.send_text_with_quick_replies(to=user_id, text=text, quick_replies=quick_replies)
+        # New flow: Date is already selected, go to hours (or сразу к подтверждению, если часы были введены)
+        prefilled = state["data"].get("prefilled_hours")
+        if prefilled:
+            _build_worker_confirmation(client, user_id, state, prefilled)
+        else:
+            acts_kind = state["data"].get("acts_kind", "tech")
+            save_to_history(user_id, f"work:grp:{acts_kind}")
+            set_state(user_id, "waiting_hours", state["data"], save_to_history=False)
+            
+            work_date = state["data"].get("work", {}).get("date", date.today().isoformat())
+            current_sum = sum_hours_for_user_date(user_id, work_date)
+            d_str = date.fromisoformat(work_date).strftime("%d.%m.%Y")
+            
+            text = (
+                f"📅 Дата: *{d_str}*\n"
+                f"📊 Уже внесено: *{current_sum}* ч\n\n"
+                f"Введите *количество часов*:"
+            )
+            quick_replies = [{"id": "back_to_loc", "title": "🔙 Назад"}]
+            client.send_text_with_quick_replies(to=user_id, text=text, quick_replies=quick_replies)
         return
 
     if current_state == "waiting_date_selection_universal":
@@ -4005,17 +4041,16 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
         next_prefix = state["data"].get("next_prefix")
         
         if next_prefix == "work:date":
-            # Worker flow: Date selected -> Choose Work Type (Technique / Manual)
-            # Сохраняем дату в состоянии
-            set_state(user_id, "pick_work_group", {"date": selected_date})
-            
-            buttons = [
-                Button(title="🚜 Техника", callback_data="work:grp:tech"),
-                Button(title="✋ Ручная", callback_data="work:type:manual"),
-                Button(title="🔙 Назад", callback_data="back:prev"),
-            ]
+            # Worker flow: Date selected -> immediately ask for hours
+            current_sum = sum_hours_for_user_date(user_id, selected_date)
             d_str = date.fromisoformat(selected_date).strftime("%d.%m.%Y")
-            client.send_message(to=user_id, text=f"📅 Дата: *{d_str}*\n\nВыберите *тип работы*:", buttons=buttons)
+            text = (
+                f"📅 Дата: *{d_str}*\n"
+                f"📊 Уже внесено: *{current_sum}* ч\n\n"
+                f"Введите *количество часов*:\n\n0. 🔙 Назад"
+            )
+            set_state(user_id, "waiting_hours_prefill", {"date": selected_date, "work": {"date": selected_date}}, save_to_history=False)
+            client.send_message(to=user_id, text=text)
             
         elif next_prefix == "brig:date":
             # Brigadier flow: Date selected -> Choose Shift
@@ -4158,6 +4193,105 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
         client.send_message(to=user_id, text=text, buttons=buttons)
         return
 
+    # Хелпер для подтверждения отчета работяги
+    def _build_worker_confirmation(client, user_id: str, state: dict, hours: int):
+        work_data = state["data"].get("work", {})
+        work_date = work_data.get("date", date.today().isoformat())
+        temp_report = {
+            "location": work_data.get("location"),
+            "loc_grp": work_data.get("loc_grp"),
+            "activity": work_data.get("activity"),
+            "act_grp": work_data.get("grp"),
+            "work_date": work_date,
+            "hours": hours,
+            "work_type": work_data.get("work_type"),
+            "machinery": work_data.get("machinery"),
+            "activity_base": work_data.get("activity_base") or work_data.get("activity"),
+            "crop": work_data.get("crop"),
+            "trips": work_data.get("trips"),
+        }
+
+        state["data"]["temp_report"] = temp_report
+        back_callback = "work:manual:crop" if work_data.get("work_type") == "manual" else None
+        set_state(user_id, "waiting_confirmation_worker", state["data"], save_to_history=True, back_callback=back_callback)
+
+        d_str = date.fromisoformat(temp_report["work_date"]).strftime("%d.%m.%y")
+        lines = [
+            f"1. Дата - {d_str}",
+            f"2. Часы - {temp_report.get('hours', '—')}",
+        ]
+
+        work_type = temp_report.get("work_type")
+        if work_type == "tractor":
+            lines.extend([
+                "3. Трактор",
+                f"4. {temp_report.get('machinery', '—')}",
+                f"5. Работа - {temp_report.get('activity_base', temp_report.get('activity', '—'))}",
+                f"6. Культура - {temp_report.get('crop', '—')}",
+                f"7. Место - {temp_report.get('location', '—')}",
+            ])
+        elif work_type == "kamaz":
+            lines.extend([
+                "3. КамАЗ",
+                f"4. Груз - {temp_report.get('crop', '—')}",
+                f"5. Рейсы - {temp_report.get('trips', '—')}",
+                f"6. Место - {temp_report.get('location', '—')}",
+            ])
+        else:
+            lines.extend([
+                "3. Ручная работа",
+                f"4. Работа - {temp_report.get('activity_base', temp_report.get('activity', '—'))}",
+                f"5. Культура - {temp_report.get('crop', '—')}",
+                f"6. Место - {temp_report.get('location', '—')}",
+            ])
+
+        text = "📋 *Проверьте данные*\n\n" + "\n".join(lines) + "\n\nВсе верно?"
+        buttons = [
+            Button(title="✅ Подтвердить", callback_data="confirm:worker"),
+            Button(title="✏️ Изменить", callback_data="edit:worker")
+        ]
+        client.send_message(to=user_id, text=text, buttons=buttons)
+
+    if current_state == "waiting_hours_prefill":
+        if message_text == "0":
+            show_date_selection(client, user_id, prefix="work:date")
+            return
+        if not message_text.isdigit():
+            client.send_message(to=user_id, text="❌ Введите число (1-24) или 0 для возврата назад.")
+            return
+        hours = int(message_text)
+        if not (1 <= hours <= 24):
+            client.send_message(to=user_id, text="❌ Часы должны быть от 1 до 24 (или 0 для возврата назад).")
+            return
+
+        work_date = state["data"].get("date") or state["data"].get("work", {}).get("date") or date.today().isoformat()
+        existing_hours = sum_hours_for_user_date(user_id, work_date)
+        if existing_hours + hours > 24:
+            max_can_add = 24 - existing_hours
+            error_parts = [
+                f"❌ *Превышен лимит часов!*\n",
+                f"Можно добавить не более *{max_can_add}* ч.\n",
+                f"Уже записано: *{existing_hours}* ч из 24\n",
+            ]
+            client.send_message(to=user_id, text="".join(error_parts))
+            return
+
+        work_data = state["data"].get("work", {}) or {}
+        work_data["date"] = work_date
+        state["data"]["work"] = work_data
+        state["data"]["date"] = work_date
+        state["data"]["prefilled_hours"] = hours
+
+        buttons = [
+            Button(title="🚜 Техника", callback_data="work:grp:tech"),
+            Button(title="✋ Ручная", callback_data="work:type:manual"),
+            Button(title="🔙 Назад", callback_data="back:prev"),
+        ]
+        d_str = date.fromisoformat(work_date).strftime("%d.%m.%Y")
+        client.send_message(to=user_id, text=f"📅 Дата: *{d_str}*\n\nВыберите *тип работы*:", buttons=buttons)
+        set_state(user_id, "pick_work_group", state["data"], save_to_history=False)
+        return
+
     if current_state == "waiting_hours":
         state = get_state(user_id)
         # Обработка кнопки "Назад" (0) или Quick Reply
@@ -4244,63 +4378,7 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
             client.send_message(to=user_id, text="\n".join(error_parts))
             return
         
-        # Prepare temp report for confirmation
-        temp_report = {
-            "location": work_data.get("location"),
-            "loc_grp": work_data.get("loc_grp"),
-            "activity": work_data.get("activity"),
-            "act_grp": work_data.get("grp"),
-            "work_date": work_date,
-            "hours": hours,
-            "work_type": work_data.get("work_type"),
-            "machinery": work_data.get("machinery"),
-            "activity_base": work_data.get("activity_base") or work_data.get("activity"),
-            "crop": work_data.get("crop"),
-            "trips": work_data.get("trips"),
-        }
-        
-        state["data"]["temp_report"] = temp_report
-        set_state(user_id, "waiting_confirmation_worker", state["data"], save_to_history=True, back_callback="work:manual:crop" if work_data.get("work_type") == "manual" else None)
-        
-        d_str = date.fromisoformat(temp_report["work_date"]).strftime("%d.%m.%y")
-        
-        lines = [
-            f"1. Дата - {d_str}",
-            f"2. Часы - {hours}",
-        ]
-
-        work_type = temp_report.get("work_type")
-        if work_type == "tractor":
-            lines.extend([
-                "3. Трактор",
-                f"4. {temp_report.get('machinery', '—')}",
-                f"5. Работа - {temp_report.get('activity_base', temp_report.get('activity', '—'))}",
-                f"6. Культура - {temp_report.get('crop', '—')}",
-                f"7. Место - {temp_report.get('location', '—')}",
-            ])
-        elif work_type == "kamaz":
-            lines.extend([
-                "3. КамАЗ",
-                f"4. Груз - {temp_report.get('crop', '—')}",
-                f"5. Рейсы - {temp_report.get('trips', '—')}",
-                f"6. Место - {temp_report.get('location', '—')}",
-            ])
-        else:
-            lines.extend([
-                "3. Ручная работа",
-                f"4. Работа - {temp_report.get('activity_base', temp_report.get('activity', '—'))}",
-                f"5. Культура - {temp_report.get('crop', '—')}",
-                f"6. Место - {temp_report.get('location', '—')}",
-            ])
-
-        text = "📋 *Проверьте данные*\n\n" + "\n".join(lines) + "\n\nВсе верно?"
-        
-        buttons = [
-            Button(title="✅ Подтвердить", callback_data="confirm:worker"),
-            Button(title="✏️ Изменить", callback_data="edit:worker")
-        ]
-        
-        client.send_message(to=user_id, text=text, buttons=buttons)
+        _build_worker_confirmation(client, user_id, state, hours)
         return
 
     if current_state == "waiting_record_selection":
