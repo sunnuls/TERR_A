@@ -2864,6 +2864,68 @@ def handle_callback(client, btn: CallbackObject):
         # Возврат к выбору даты (для IT)
         show_date_selection(client, user_id, prefix="it:date")
 
+ # -----------------------------
+ # Хелперы для текстовых сообщений
+ # -----------------------------
+
+def _build_worker_confirmation(client, user_id: str, state: dict, hours: int):
+    work_data = state["data"].get("work", {})
+    work_date = work_data.get("date", date.today().isoformat())
+    temp_report = {
+        "location": work_data.get("location"),
+        "loc_grp": work_data.get("loc_grp"),
+        "activity": work_data.get("activity"),
+        "act_grp": work_data.get("grp"),
+        "work_date": work_date,
+        "hours": hours,
+        "work_type": work_data.get("work_type"),
+        "machinery": work_data.get("machinery"),
+        "activity_base": work_data.get("activity_base") or work_data.get("activity"),
+        "crop": work_data.get("crop"),
+        "trips": work_data.get("trips"),
+    }
+
+    state["data"]["temp_report"] = temp_report
+    back_callback = "work:manual:crop" if work_data.get("work_type") == "manual" else None
+    set_state(user_id, "waiting_confirmation_worker", state["data"], save_to_history=True, back_callback=back_callback)
+
+    d_str = date.fromisoformat(temp_report["work_date"]).strftime("%d.%m.%y")
+    lines = [
+        f"1. Дата - {d_str}",
+        f"2. Часы - {temp_report.get('hours', '—')}",
+    ]
+
+    work_type = temp_report.get("work_type")
+    if work_type == "tractor":
+        lines.extend([
+            "3. Трактор",
+            f"4. {temp_report.get('machinery', '—')}",
+            f"5. Работа - {temp_report.get('activity_base', temp_report.get('activity', '—'))}",
+            f"6. Культура - {temp_report.get('crop', '—')}",
+            f"7. Место - {temp_report.get('location', '—')}",
+        ])
+    elif work_type == "kamaz":
+        lines.extend([
+            "3. КамАЗ",
+            f"4. Груз - {temp_report.get('crop', '—')}",
+            f"5. Рейсы - {temp_report.get('trips', '—')}",
+            f"6. Место - {temp_report.get('location', '—')}",
+        ])
+    else:
+        lines.extend([
+            "3. Ручная работа",
+            f"4. Работа - {temp_report.get('activity_base', temp_report.get('activity', '—'))}",
+            f"5. Культура - {temp_report.get('crop', '—')}",
+            f"6. Место - {temp_report.get('location', '—')}",
+        ])
+
+    text = "📋 *Проверьте данные*\n\n" + "\n".join(lines) + "\n\nВсе верно?"
+    buttons = [
+        Button(title="✅ Подтвердить", callback_data="confirm:worker"),
+        Button(title="✏️ Изменить", callback_data="edit:worker")
+    ]
+    client.send_message(to=user_id, text=text, buttons=buttons)
+
 # -----------------------------
 # Обработка текстовых сообщений
 # -----------------------------
@@ -3164,65 +3226,6 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
         set_state(user_id, brig_stage, state.get("data", {}), save_to_history=False)
         current_state = brig_stage
         state = get_state(user_id)
-
-    # Хелпер: собрать подтверждение для работяги (трактор/КамАЗ/ручная)
-    def _build_worker_confirmation(client, user_id: str, state: dict, hours: int):
-        work_data = state["data"].get("work", {})
-        work_date = work_data.get("date", date.today().isoformat())
-        temp_report = {
-            "location": work_data.get("location"),
-            "loc_grp": work_data.get("loc_grp"),
-            "activity": work_data.get("activity"),
-            "act_grp": work_data.get("grp"),
-            "work_date": work_date,
-            "hours": hours,
-            "work_type": work_data.get("work_type"),
-            "machinery": work_data.get("machinery"),
-            "activity_base": work_data.get("activity_base") or work_data.get("activity"),
-            "crop": work_data.get("crop"),
-            "trips": work_data.get("trips"),
-        }
-
-        state["data"]["temp_report"] = temp_report
-        back_callback = "work:manual:crop" if work_data.get("work_type") == "manual" else None
-        set_state(user_id, "waiting_confirmation_worker", state["data"], save_to_history=True, back_callback=back_callback)
-
-        d_str = date.fromisoformat(temp_report["work_date"]).strftime("%d.%m.%y")
-        lines = [
-            f"1. Дата - {d_str}",
-            f"2. Часы - {temp_report.get('hours', '—')}",
-        ]
-
-        work_type = temp_report.get("work_type")
-        if work_type == "tractor":
-            lines.extend([
-                "3. Трактор",
-                f"4. {temp_report.get('machinery', '—')}",
-                f"5. Работа - {temp_report.get('activity_base', temp_report.get('activity', '—'))}",
-                f"6. Культура - {temp_report.get('crop', '—')}",
-                f"7. Место - {temp_report.get('location', '—')}",
-            ])
-        elif work_type == "kamaz":
-            lines.extend([
-                "3. КамАЗ",
-                f"4. Груз - {temp_report.get('crop', '—')}",
-                f"5. Рейсы - {temp_report.get('trips', '—')}",
-                f"6. Место - {temp_report.get('location', '—')}",
-            ])
-        else:
-            lines.extend([
-                "3. Ручная работа",
-                f"4. Работа - {temp_report.get('activity_base', temp_report.get('activity', '—'))}",
-                f"5. Культура - {temp_report.get('crop', '—')}",
-                f"6. Место - {temp_report.get('location', '—')}",
-            ])
-
-        text = "📋 *Проверьте данные*\n\n" + "\n".join(lines) + "\n\nВсе верно?"
-        buttons = [
-            Button(title="✅ Подтвердить", callback_data="confirm:worker"),
-            Button(title="✏️ Изменить", callback_data="edit:worker")
-        ]
-        client.send_message(to=user_id, text=text, buttons=buttons)
 
     if current_state == "waiting_name":
         # Feature 5: Mandatory Full Name Registration
@@ -4576,38 +4579,6 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
         state["data"]["current_edit_idx"] += 1
         process_edit_queue(client, user_id, state["data"])
         return
-
-def process_edit_queue(client, user_id, data):
-    queue = data["edit_queue"]
-    idx = data["current_edit_idx"]
-    
-    if idx >= len(queue):
-        # All done
-        client.send_message(to=user_id, text="✅ Все выбранные записи отредактированы.")
-        u = get_user(user_id)
-        clear_state(user_id)
-        show_main_menu(client, user_id, u)
-        return
-        
-    # Show edit prompt for current item
-    item = queue[idx]
-    rid, wdate, act, loc, h, _ = item
-    
-    text = (
-        f"📝 *Редактирование записи {idx+1}/{len(queue)}*\n"
-        f"📅 Дата: {wdate}\n"
-        f"📍 Место: {loc}\n"
-        f"🚜 Работа: {act}\n"
-        f"🕒 Текущие часы: *{h}*\n\n"
-        f"Введите *новые часы* (или 0 для отмены всех):"
-    )
-    
-    # Update state for this step
-    set_state(user_id, "waiting_edit_queue_hours", data) # Data already contains queue/idx
-    client.send_message(to=user_id, text=text)
-
-# ... (existing code) ...
-
     if current_state == "wait_del_brig_select":
         if message_text == "0":
             client.send_message(to=user_id, text="🔄 Отмена")
@@ -4616,7 +4587,6 @@ def process_edit_queue(client, user_id, data):
             show_main_menu(client, user_id, u)
             return
             
-        # Parse multiple IDs for brigadiers too
         ids_to_delete = []
         invalid_inputs = []
         
@@ -4647,11 +4617,7 @@ def process_edit_queue(client, user_id, data):
             placeholders = ",".join("?" * len(ids_to_delete))
             c.execute(f"DELETE FROM brigadier_reports WHERE id IN ({placeholders})", ids_to_delete)
             con.commit()
-            deleted_count = c.execute("SELECT changes()").fetchone()[0] # This might not work in all sqlite versions/drivers perfectly in one go
-            # Rowcount is better check on cursor object
-            
-        # Re-check deletion rowcount isn't easy with batch delete in this wrapper context easily without cursor object
-        # Let's assume success if no exception
+        
         client.send_message(to=user_id, text=f"✅ Удалено записей: {len(ids_to_delete)}")
         
         clear_state(user_id)
@@ -4660,11 +4626,6 @@ def process_edit_queue(client, user_id, data):
         return
 
     if current_state == "wait_edit_brig_select":
-        # For simplicity, we only allow deleting brigadier reports for now or re-creating.
-        # Editing complex brigadier reports (rows/bags/workers) via chat is cumbersome.
-        # Let's just say "Use delete and create new" or implement simple edit if needed.
-        # But user asked for "Edit" button. Let's allow editing rows for now.
-        
         if message_text == "0":
             client.send_message(to=user_id, text="🔄 Отмена")
             clear_state(user_id)
@@ -4706,11 +4667,10 @@ def process_edit_queue(client, user_id, data):
         if message_text == "0":
             if go_back(client, user_id):
                 return
-            else:
-                clear_state(user_id)
-                u = get_user(user_id)
-                show_main_menu(client, user_id, u)
-                return
+            clear_state(user_id)
+            u = get_user(user_id)
+            show_main_menu(client, user_id, u)
+            return
         
         if not message_text.isdigit():
             client.send_message(to=user_id, text="❌ Введите число (1-24) или 0 для возврата.")
@@ -4743,12 +4703,9 @@ def process_edit_queue(client, user_id, data):
         
         ok = update_report_hours(rid, user_id, new_h)
         if ok:
-            # Получаем данные для уведомления
             old_hours = state["data"].get("edit_old_hours", "?")
             activity = state["data"].get("edit_activity", "работа")
             location = state["data"].get("edit_location", "место")
-            
-            # Формируем текст уведомления
             edit_text = (
                 f"📝 Запись #{rid}\n"
                 f"Дата: {work_d}\n"
@@ -4756,8 +4713,6 @@ def process_edit_queue(client, user_id, data):
                 f"Работа: {activity}\n"
                 f"Часы: {old_hours} → *{new_h}*"
             )
-            
-            # Отправляем уведомление на релейный номер
             u = get_user(user_id)
             user_name = (u or {}).get("full_name") or user_id
             send_report_to_relay(original_from=user_id, original_text=edit_text, user_name=user_name, is_edit=True)
@@ -4797,7 +4752,7 @@ def process_edit_queue(client, user_id, data):
             client.send_message(to=user_id, text="❌ Не удалось распознать. Введите номер или название (или 0 для возврата).")
             return
         
-        act_id, act_name = found
+        _, act_name = found
         if remove_activity(act_name):
             client.send_message(to=user_id, text=f"✅ Вид работы '{act_name}' удален.")
         else:
@@ -4834,7 +4789,7 @@ def process_edit_queue(client, user_id, data):
             client.send_message(to=user_id, text="❌ Не удалось распознать. Введите номер или название (или 0 для возврата).")
             return
         
-        loc_id, loc_name = found
+        _, loc_name = found
         if remove_location(loc_name):
             client.send_message(to=user_id, text=f"✅ Локация '{loc_name}' удалена.")
         else:
@@ -4848,7 +4803,6 @@ def process_edit_queue(client, user_id, data):
     # Обработчики для бригадиров
     # -----------------------------
     
-    # Команда бриг: для админа - управление, для IT/бригадира - меню бригадира
     if norm_text in {"бриг", "/бриг"}:
         if is_admin(user_id):
             buttons = [
@@ -4859,21 +4813,17 @@ def process_edit_queue(client, user_id, data):
             client.send_message(to=user_id, text="👷 *Управление бригадирами*:", buttons=buttons)
             return
         if is_it(user_id) or is_brigadier(user_id):
-            # Открываем меню бригадира
             btn_obj = type('obj', (object,), {'from_user': msg.from_user, 'data': 'menu:brigadier'})()
             handle_callback(client, btn_obj)
             return
         client.send_message(to=user_id, text="❌ Нет прав для доступа к меню бригадира.")
         return
     
-    # Debug log for brig states
     if current_state and current_state.startswith("brig_"):
         logging.info(f"[BRIG] state_entry user={user_id} state={current_state} text='{message_text.strip()}' data={state.get('data', {})}")
     
-    # Форма кабачков: ряды
     if current_state == "brig_zucchini_rows":
         logging.info(f"[BRIG] state=brig_zucchini_rows enter handler user={user_id} data={state.get('data', {})}")
-        # Обработка ввода рядов для кабачков
         try:
             txt = message_text.strip()
             logging.info(f"[BRIG] enter zucchini_rows user={user_id} text='{txt}' state={state.get('data', {})}")
@@ -4885,9 +4835,7 @@ def process_edit_queue(client, user_id, data):
                 client.send_message(to=user_id, text="❌ Введите число (количество рядов):", buttons=buttons)
                 return
             rows = int(txt)
-            # Страхуемся, что есть data
             state["data"] = state.get("data", {}) or {}
-            # Подстрахуем, чтобы дальше не было KeyError
             if "work_type" not in state["data"]:
                 state["data"]["work_type"] = "Кабачок"
             if "date" not in state["data"]:
@@ -4896,7 +4844,6 @@ def process_edit_queue(client, user_id, data):
             state["data"]["rows"] = rows
             state["data"]["brig_stage"] = "brig_zucchini_rows"
             logging.info(f"[BRIG] {user_id} zucchini rows set -> {rows}, data={state['data']}")
-            # Сохраняем шаг для корректного Back
             back_cb = f"brig:report:date:{work_date}"
             set_state(user_id, "brig_zucchini_field", state["data"], save_to_history=True, back_callback=back_cb)
             buttons = [Button(title="🔙 Назад", callback_data="back:prev")]
@@ -4909,7 +4856,6 @@ def process_edit_queue(client, user_id, data):
             logging.info(f"[BRIG] prompt error sent to {user_id}")
         return
     
-    # Форма кабачков: поле
     if current_state == "brig_zucchini_field":
         txt = message_text.strip()
         if txt == "0":
@@ -4918,13 +4864,11 @@ def process_edit_queue(client, user_id, data):
         state["data"] = state.get("data", {}) or {}
         state["data"]["field"] = txt
         logging.info(f"[BRIG] {user_id} zucchini field set -> {txt}")
-        # Сохраняем в историю для back
         set_state(user_id, "brig_zucchini_workers", state["data"], save_to_history=True, back_callback="back:prev")
         buttons = [Button(title="🔙 Назад", callback_data="back:prev")]
         client.send_message(to=user_id, text="Введите *количество людей*:", buttons=buttons)
         return
     
-    # Форма кабачков: люди (финальный шаг)
     if current_state == "brig_zucchini_workers":
         txt = message_text.strip()
         if txt == "0":
@@ -4965,7 +4909,6 @@ def process_edit_queue(client, user_id, data):
         client.send_message(to=user_id, text=text, buttons=buttons)
         return
     
-    # Форма картошки: ряды
     if current_state == "brig_potato_rows":
         txt = message_text.strip()
         if txt == "0":
@@ -4980,18 +4923,12 @@ def process_edit_queue(client, user_id, data):
         state["data"]["rows"] = rows
         state["data"]["brig_stage"] = "brig_potato_rows"
         logging.info(f"[BRIG] {user_id} potato rows set -> {rows}, data={state['data']}")
-        # Сохраняем историю для корректного Back (к выбору культуры/даты)
-        back_cb = None
-        if state["data"].get("date"):
-            back_cb = f"brig:report:date:{state['data']['date']}"
-        else:
-            back_cb = "menu:brigadier"
+        back_cb = f"brig:report:date:{state['data']['date']}" if state["data"].get("date") else "menu:brigadier"
         set_state(user_id, "brig_potato_field", state["data"], save_to_history=True, back_callback=back_cb)
         buttons = [Button(title="🔙 Назад", callback_data="back:prev")]
         client.send_message(to=user_id, text="Введите *название поля*:", buttons=buttons)
         return
 
-    # Форма картошки: поле
     if current_state == "brig_potato_field":
         txt = message_text.strip()
         if txt == "0":
@@ -5005,7 +4942,6 @@ def process_edit_queue(client, user_id, data):
         client.send_message(to=user_id, text="Введите *количество сеток*:", buttons=buttons)
         return
     
-    # Форма картошки: сетки
     if current_state == "brig_potato_bags":
         txt = message_text.strip()
         if txt == "0":
@@ -5024,7 +4960,6 @@ def process_edit_queue(client, user_id, data):
         client.send_message(to=user_id, text="Введите *количество людей*:", buttons=buttons)
         return
     
-    # Форма картошки: люди (финальный шаг)
     if current_state == "brig_potato_workers":
         txt = message_text.strip()
         if txt == "0":
@@ -5036,10 +4971,7 @@ def process_edit_queue(client, user_id, data):
             return
         workers = int(txt)
         logging.info(f"[BRIG] {user_id} potato workers set -> {workers}")
-        
-        # Получаем дату из состояния
         work_date = state["data"].get("date", date.today().isoformat())
-        
         temp_report = {
             "work_type": state["data"]["work_type"],
             "rows": state["data"]["rows"],
@@ -5073,18 +5005,12 @@ def process_edit_queue(client, user_id, data):
         client.send_message(to=user_id, text=text, buttons=buttons)
         return
     
-    # Админ: добавление бригадира
     if current_state == "adm_wait_brigadier_add":
-        # Ожидаем номер телефона
         phone = message_text.strip()
-        
-        # Если ввели "Номер Имя"
         parts = phone.split(maxsplit=1)
         if len(parts) == 2 and parts[0].isdigit():
             phone = parts[0]
             name = parts[1]
-            
-            # Сразу добавляем
             target_user = get_user(phone)
             if not target_user:
                 upsert_user(phone, name, TZ)
@@ -5101,18 +5027,15 @@ def process_edit_queue(client, user_id, data):
             show_main_menu(client, user_id, u)
             return
 
-        # Если только номер
         if not phone.isdigit() or len(phone) < 10:
             client.send_message(to=user_id, text="❌ Введите корректный номер телефона (например: 79001234567) или 'Номер Имя':")
             return
         
-        # Сохраняем номер и спрашиваем имя
         state["data"]["brig_phone"] = phone
         set_state(user_id, "adm_wait_brigadier_name", state["data"])
         client.send_message(to=user_id, text="✏️ Введите *Имя бригадира*:")
         return
 
-    # Админ: ввод имени бригадира
     if current_state == "adm_wait_brigadier_name":
         name = message_text.strip()
         if len(name) < 2:
@@ -5125,7 +5048,6 @@ def process_edit_queue(client, user_id, data):
             clear_state(user_id)
             return
             
-        # Создаем/обновляем пользователя
         upsert_user(phone, name, TZ)
         
         if add_brigadier(phone, name, name, user_id):
@@ -5138,7 +5060,6 @@ def process_edit_queue(client, user_id, data):
         show_main_menu(client, user_id, u)
         return
     
-    # Админ: удаление бригадира
     if current_state == "adm_wait_brigadier_del":
         if message_text == "0":
             buttons = [
@@ -5159,7 +5080,6 @@ def process_edit_queue(client, user_id, data):
         user_input = message_text.strip()
         brig = None
 
-        # Вариант 1: пользователь ввел номер из списка (1,2,3,...)
         if user_input.isdigit():
             idx = int(user_input) - 1
             if 0 <= idx < len(brigadiers):
@@ -5168,7 +5088,6 @@ def process_edit_queue(client, user_id, data):
                 client.send_message(to=user_id, text="❌ Неверный номер. Введите номер из списка или телефон бригадира.")
                 return
         else:
-            # Вариант 2: пользователь ввел номер телефона/WA ID бригадира
             normalized_input = _normalize_phone(user_input)
             for b in brigadiers:
                 brig_uid = b[0]
@@ -5195,12 +5114,37 @@ def process_edit_queue(client, user_id, data):
         show_main_menu(client, user_id, u)
         return
 
-    # 3. Если нет состояния и это не команда -> Показываем меню (если юзер зарегистрирован)
     u = get_user(user_id)
     if u and (u.get("full_name") or "").strip():
         show_main_menu(client, user_id, u)
     else:
         cmd_start(client, msg)
+
+def process_edit_queue(client, user_id, data):
+    queue = data["edit_queue"]
+    idx = data["current_edit_idx"]
+    
+    if idx >= len(queue):
+        client.send_message(to=user_id, text="✅ Все выбранные записи отредактированы.")
+        u = get_user(user_id)
+        clear_state(user_id)
+        show_main_menu(client, user_id, u)
+        return
+        
+    item = queue[idx]
+    rid, wdate, act, loc, h, _ = item
+    
+    text = (
+        f"📝 *Редактирование записи {idx+1}/{len(queue)}*\n"
+        f"📅 Дата: {wdate}\n"
+        f"📍 Место: {loc}\n"
+        f"🚜 Работа: {act}\n"
+        f"🕒 Текущие часы: *{h}*\n\n"
+        f"Введите *новые часы* (или 0 для отмены всех):"
+    )
+    
+    set_state(user_id, "waiting_edit_queue_hours", data)
+    client.send_message(to=user_id, text=text)
 
 # -----------------------------
 # Запуск
