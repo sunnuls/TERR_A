@@ -4866,6 +4866,7 @@ def process_edit_queue(client, user_id, data):
     
     # Форма кабачков: ряды
     if current_state == "brig_zucchini_rows":
+        logging.info(f"[BRIG] state=brig_zucchini_rows enter handler user={user_id} data={state.get('data', {})}")
         # Обработка ввода рядов для кабачков
         try:
             txt = message_text.strip()
@@ -4899,6 +4900,7 @@ def process_edit_queue(client, user_id, data):
             logging.exception(f"[BRIG] error in zucchini_rows for user {user_id}: {e}")
             buttons = [Button(title="🔙 Назад", callback_data="back:prev")]
             client.send_message(to=user_id, text="❌ Ошибка при обработке рядов, попробуйте еще раз.", buttons=buttons)
+            logging.info(f"[BRIG] prompt error sent to {user_id}")
         return
     
     # Форма кабачков: поле
