@@ -552,6 +552,7 @@ def init_db():
             "МТФ",
             "Рогачи (б)",
             "Прочее",
+            "Аренда Третьяка (40 га)",
         ]
         placeholders = ",".join("?" * len(obsolete_locations))
         if placeholders:
@@ -653,7 +654,11 @@ def list_locations_with_id(grp: str) -> List[Tuple[int, str]]:
 
         # Для полей применяем фиксированный порядок и исключаем «Прочее» (оно выводится отдельно)
         if grp == GROUP_FIELDS:
-            locs = [(lid, name) for lid, name in locs if name.lower() != "прочее"]
+            locs = [
+                (lid, name)
+                for lid, name in locs
+                if name.lower() != "прочее" and name != "Аренда Третьяка (40 га)"
+            ]
             order_map = {name: idx for idx, name in enumerate(FIELD_ORDER)}
             locs.sort(key=lambda item: (order_map.get(item[1], len(order_map)), item[1]))
             return locs
@@ -1120,11 +1125,11 @@ def show_main_menu(wa: WhatsApp360Client, user_id: str, u: dict):
             Button(title="📊 Статистика", callback_data="menu:stats"),
         ]
     elif brigadier:
-        # Бригадир сразу попадает в бриг-меню: ОБ, Статистика, Настройки
+        # Бригадир: ОБ, ОТД, Настройки (статистика внутри настроек)
         buttons = [
-            Button(title="👷 ОБ (Отчет)", callback_data="brig:report"),  # сразу в отчет
-            Button(title="📊 Статистика", callback_data="menu:stats"),
-            Button(title="⚙️ Настройки", callback_data="menu:settings"),
+            Button(title="👷 ОБ (Отчет)", callback_data="brig:report"),
+            Button(title="🚜 ОТД", callback_data="brig:work"),
+            Button(title="⚙️ Настройки", callback_data="brig:settings"),
         ]
         text = f"👤 *{name}*\n\nВыберите действие: 🌻"
     else:
@@ -1142,13 +1147,19 @@ def show_main_menu(wa: WhatsApp360Client, user_id: str, u: dict):
         
     wa.send_message(to=user_id, text=text, buttons=buttons)
 
-def show_settings_menu(wa: WhatsApp360Client, user_id: str):
-    """Меню настроек (бывшее Ещё)"""
-    buttons = [
-        Button(title="✏️ Сменить имя", callback_data="menu:name"),
-        Button(title="🔙 Назад", callback_data="back:prev"),
-    ]
-    wa.send_message(to=user_id, text="⚙️ *Настройки*\n\nВы можете изменить свое имя.", buttons=buttons)
+def show_settings_menu(wa: WhatsApp360Client, user_id: str, is_brig: Optional[bool] = None):
+    """Меню настроек (бывшее Ещё). Для бригадира добавляем пункт статистики."""
+    if is_brig is None:
+        is_brig = is_brigadier(user_id)
+    buttons = [Button(title="✏️ Сменить имя", callback_data="menu:name")]
+    if is_brig:
+        buttons.append(Button(title="📊 Статистика", callback_data="brig:stats"))
+    buttons.append(Button(title="🔙 Назад", callback_data="back:prev"))
+    wa.send_message(
+        to=user_id,
+        text="⚙️ *Настройки*\n\nВы можете изменить свое имя." + ("\nТакже доступна статистика." if is_brig else ""),
+        buttons=buttons
+    )
 
 def show_brigadier_menu(wa: WhatsApp360Client, user_id: str):
     """
@@ -1538,7 +1549,12 @@ def handle_callback(client, btn: CallbackObject):
     elif data == "menu:settings":
         # Сохраняем текущее состояние в историю перед переходом
         save_to_history(user_id, "menu:root")
-        show_settings_menu(client, user_id)
+        show_settings_menu(client, user_id, is_brigadier(user_id))
+
+    elif data == "brig:settings":
+        # Настройки для бригадира (возврат в меню бригадира)
+        save_to_history(user_id, "menu:brigadier")
+        show_settings_menu(client, user_id, True)
     
     elif data == "menu:work":
         # Сохраняем текущее состояние в историю перед переходом
@@ -1550,6 +1566,16 @@ def handle_callback(client, btn: CallbackObject):
             return
         
         # ОТД - Сразу выбор даты
+        show_date_selection(client, user_id, prefix="work:date")
+
+    elif data == "brig:work":
+        # ОТД из меню бригадира (возврат в меню бригадира)
+        save_to_history(user_id, "menu:brigadier")
+        u = get_user(user_id)
+        if not u or not (u.get("full_name") or "").strip():
+            set_state(user_id, "waiting_name", save_to_history=False)
+            client.send_message(to=user_id, text="Введите *Фамилию Имя* для регистрации.")
+            return
         show_date_selection(client, user_id, prefix="work:date")
     
     elif data == "menu:stats":
@@ -2743,8 +2769,8 @@ def handle_callback(client, btn: CallbackObject):
         save_to_history(user_id, "menu:root")
         buttons = [
             Button(title="👷 ОБ (Отчет)", callback_data="brig:report"),
-            Button(title="📊 Статистика", callback_data="brig:stats"),
-            Button(title="⚙️ Настройки", callback_data="menu:settings"),
+            Button(title="🚜 ОТД", callback_data="brig:work"),
+            Button(title="⚙️ Настройки", callback_data="brig:settings"),
         ]
         client.send_message(to=user_id, text="👷 *Меню бригадира*\n\nВыберите действие: 🌻", buttons=buttons)
 
