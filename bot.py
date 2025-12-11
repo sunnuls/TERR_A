@@ -553,6 +553,7 @@ def init_db():
             "Рогачи (б)",
             "Прочее",
             "Аренда Третьяка (40 га)",
+            "Аренда Третьяк (40 га)",
         ]
         placeholders = ",".join("?" * len(obsolete_locations))
         if placeholders:
@@ -654,10 +655,11 @@ def list_locations_with_id(grp: str) -> List[Tuple[int, str]]:
 
         # Для полей применяем фиксированный порядок и исключаем «Прочее» (оно выводится отдельно)
         if grp == GROUP_FIELDS:
+            banned_locs = {"Аренда Третьяка (40 га)", "Аренда Третьяк (40 га)"}
             locs = [
                 (lid, name)
                 for lid, name in locs
-                if name.lower() != "прочее" and name != "Аренда Третьяка (40 га)"
+                if name.lower() != "прочее" and name not in banned_locs
             ]
             order_map = {name: idx for idx, name in enumerate(FIELD_ORDER)}
             locs.sort(key=lambda item: (order_map.get(item[1], len(order_map)), item[1]))
