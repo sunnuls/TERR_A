@@ -188,32 +188,58 @@ ACTIVITIES_TRACTOR = [
 
 # Работы ручные
 ACTIVITIES_MANUAL = [
-    "Лесополоса", "Прополка", "Сев", "Уборка", "Прочее"
+    "Парково-хозяйственная Работа (ПХР)",
+    "Ремонт",
+    "Лесополосы",
+    "Прополка",
+    "Уборка",
+    "Прочее",
 ]
 
 # Культуры
 CROPS = [
-    "Кабачок", "Картошка", "Подсолнечник", "Кукуруза", "Пшеница", "Горох", "Прочее"
+    "Нет культуры",
+    "Кабачок",
+    "Картошка",
+    "Подсолнечник",
+    "Кукуруза",
+    "Пшеница",
+    "Горох",
+    "Прочее",
 ]
 
 # Культуры для КамАЗ (те же + Навоз если надо, но Навоз есть в работах трактора.
 # Для КамАЗа "Навоз" может быть как груз. Добавим "Навоз" в список культур для КамАЗа отдельно или используем общий)
-CROPS_KAMAZ = CROPS + ["Навоз"]
+CROPS_KAMAZ = CROPS[:-1] + ["Навоз", "Прочее"]
 
 # Места погрузки для КамАЗа (поля + склад + прочее)
 # Мы будем формировать их динамически из списка locations + "Склад"
 
 DEFAULT_FIELDS = [
-    "58 га",
-    "Северное",
     "Фазенда",
-    "Фермерское",
-    "МТФ",
-    "Рогачи (б)",
-    "Рогачи(М)",
     "Чеки Куропятника",
+    "58га",
+    "Фермерское",
+    "Северное",
+    "Чеки",
+    "МТФ №3",
+    "Рогачи(Б)",
+    "Рогачи(М)",
     "Аренда Третьяк",
-    "Прочее",
+]
+
+# Желаемый порядок отображения полей (начиная с позиции 3, т.к. 1 — Склад, 2 — Прочее)
+FIELD_ORDER = [
+    "Фазенда",
+    "Чеки Куропятника",
+    "58га",
+    "Фермерское",
+    "Северное",
+    "Чеки",
+    "МТФ №3",
+    "Рогачи(Б)",
+    "Рогачи(М)",
+    "Аренда Третьяк",
 ]
 
 # Оставляем старые списки для совместимости если где-то используются, 
@@ -226,6 +252,16 @@ GROUP_HAND = "ручная"
 GROUP_KAMAZ = "камаз" # Новый тип
 GROUP_FIELDS = "поля"
 GROUP_WARE = "склад"
+
+def build_manual_location_lines(locations: List[Tuple[int, str]]) -> List[str]:
+    """
+    Формирует список строк для выбора локации в ручной работе:
+    сначала Склад и Прочее, затем сохраненные поля.
+    """
+    lines = ["Выберите *локацию* (отправьте номер):", "1. Склад", "2. Прочее"]
+    for i, (_, name) in enumerate(locations, start=3):
+        lines.append(f"{i}. {name}")
+    return lines
 
 WELCOME_MESSAGE = "Добро пожаловать! Этот бот поможет вам отправлять отчеты."
 
@@ -505,7 +541,18 @@ def init_db():
             c.execute("UPDATE activities SET grp=? WHERE (grp IS NULL OR grp='')", (GROUP_HAND,))
 
         # Очистка устаревших локаций
-        obsolete_locations = ["Чеки №1", "Чеки №2", "Чеки №3", "5 га", "Сад", "Владимирова Аренда"]
+        obsolete_locations = [
+            "Чеки №1",
+            "Чеки №2",
+            "Чеки №3",
+            "5 га",
+            "Сад",
+            "Владимирова Аренда",
+            "58 га",
+            "МТФ",
+            "Рогачи (б)",
+            "Прочее",
+        ]
         placeholders = ",".join("?" * len(obsolete_locations))
         if placeholders:
             c.execute(f"DELETE FROM locations WHERE name IN ({placeholders})", (*obsolete_locations,))
@@ -593,23 +640,29 @@ def list_locations(grp: str) -> List[str]:
 
 def list_locations_with_id(grp: str) -> List[Tuple[int, str]]:
     with connect() as con, closing(con.cursor()) as c:
-        # Кастомный порядок: «Аренда Третьяк» перед «Прочее», «Прочее» всегда последним
         rows = c.execute(
             """
             SELECT id, name
             FROM locations
             WHERE grp=?
-            ORDER BY 
-                CASE 
-                    WHEN name='Аренда Третьяк' THEN 98
-                    WHEN name='Прочее' THEN 99
-                    ELSE 0
-                END,
-                name
             """,
             (grp,)
         ).fetchall()
-        return [(r[0], r[1]) for r in rows]
+
+        locs = [(r[0], r[1]) for r in rows]
+
+        # Для полей применяем фиксированный порядок и исключаем «Прочее» (оно выводится отдельно)
+        if grp == GROUP_FIELDS:
+            locs = [(lid, name) for lid, name in locs if name.lower() != "прочее"]
+            order_map = {name: idx for idx, name in enumerate(FIELD_ORDER)}
+            locs.sort(key=lambda item: (order_map.get(item[1], len(order_map)), item[1]))
+            return locs
+
+        # Для остальных групп: сортировка по названию с «Прочее» в конце
+        return sorted(
+            locs,
+            key=lambda item: (1 if item[1] == "Прочее" else 0, item[1])
+        )
 
 def get_location_name(loc_id: int) -> Optional[Tuple[str, str]]:
     with connect() as con, closing(con.cursor()) as c:
@@ -1436,9 +1489,7 @@ def handle_callback(client, btn: CallbackObject):
         locations = list_locations_with_id(GROUP_FIELDS)
         state["data"]["locs"] = locations
         set_state(user_id, "work_manual_field", state["data"], save_to_history=False)
-        lines = ["Выберите *поле* (отправьте номер):"]
-        for i, (_, name) in enumerate(locations, 1):
-            lines.append(f"{i}. {name}")
+        lines = build_manual_location_lines(locations)
         client.send_message(to=user_id, text="\n".join(lines), buttons=[Button(title="🔙 Назад", callback_data="back:prev")])
         return
 
@@ -3500,12 +3551,13 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
         if not (1 <= choice <= len(CROPS)):
             client.send_message(to=user_id, text="❌ Неверный номер. Введите номер из списка или 0.")
             return
+        selected_crop = CROPS[choice - 1]
         # Прочее -> свободный ввод
-        if choice == len(CROPS) and CROPS[choice - 1].lower() == "прочее":
+        if selected_crop.lower() == "прочее":
             set_state(user_id, "work_tractor_crop_custom", state["data"], save_to_history=False)
             client.send_message(to=user_id, text="📝 Введите *культуру* текстом:", buttons=[Button(title="🔙 Назад", callback_data="back:prev")])
             return
-        crop = CROPS[choice - 1]
+        crop = selected_crop
         work_data = state.get("data", {}).get("work", {})
         work_data["crop"] = crop
         # Формируем activity строку с деталями
@@ -3596,11 +3648,12 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
         if not (1 <= choice <= len(CROPS_KAMAZ)):
             client.send_message(to=user_id, text="❌ Неверный номер. Введите номер из списка или нажмите Назад.", buttons=[Button(title="🔙 Назад", callback_data="back:prev")])
             return
-        if choice == len(CROPS_KAMAZ) and CROPS_KAMAZ[choice - 1].lower() == "прочее":
+        selected_crop = CROPS_KAMAZ[choice - 1]
+        if selected_crop.lower() == "прочее":
             set_state(user_id, "work_kamaz_crop_custom", state["data"], save_to_history=False)
             client.send_message(to=user_id, text="📝 Введите *культуру* текстом:", buttons=[Button(title="🔙 Назад", callback_data="back:prev")])
             return
-        crop = CROPS_KAMAZ[choice - 1]
+        crop = selected_crop
         work_data = state.get("data", {}).get("work", {})
         work_data["crop"] = crop
         work_data["work_type"] = "kamaz"
@@ -3798,9 +3851,7 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
 
         locations = list_locations_with_id(GROUP_FIELDS)
         state["data"]["locs"] = locations
-        lines = ["Выберите *поле* (отправьте номер):"]
-        for i, (_, name) in enumerate(locations, 1):
-            lines.append(f"{i}. {name}")
+        lines = build_manual_location_lines(locations)
         client.send_message(to=user_id, text="\n".join(lines), buttons=[Button(title="🔙 Назад", callback_data="back:prev")])
         return
 
@@ -3825,9 +3876,7 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
 
         locations = list_locations_with_id(GROUP_FIELDS)
         state["data"]["locs"] = locations
-        lines = ["Выберите *поле* (отправьте номер):"]
-        for i, (_, name) in enumerate(locations, 1):
-            lines.append(f"{i}. {name}")
+        lines = build_manual_location_lines(locations)
         client.send_message(to=user_id, text="\n".join(lines), buttons=[Button(title="🔙 Назад", callback_data="back:prev")])
         return
 
@@ -3842,20 +3891,61 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
             return
         locs = state.get("data", {}).get("locs", [])
         found_loc = None
+        chosen_loc_grp = GROUP_FIELDS
         if message_text.isdigit():
-            idx = int(message_text) - 1
-            if 0 <= idx < len(locs):
-                found_loc = locs[idx][1]
+            choice = int(message_text)
+            if choice == 1:
+                found_loc = "Склад"
+                chosen_loc_grp = GROUP_WARE
+            elif choice == 2:
+                set_state(user_id, "work_manual_field_custom", state["data"], save_to_history=True, back_callback="work:manual:field")
+                client.send_message(to=user_id, text="Введите *локацию* текстом:", buttons=[Button(title="🔙 Назад", callback_data="back:prev")])
+                return
+            else:
+                idx = choice - 3
+                if 0 <= idx < len(locs):
+                    found_loc = locs[idx][1]
         if not found_loc:
             for _, name in locs:
                 if name.lower() == message_text.lower():
                     found_loc = name
                     break
+            if message_text.lower() == "склад":
+                found_loc = "Склад"
+                chosen_loc_grp = GROUP_WARE
+            elif message_text.lower() == "прочее":
+                set_state(user_id, "work_manual_field_custom", state["data"], save_to_history=True, back_callback="work:manual:field")
+                client.send_message(to=user_id, text="Введите *локацию* текстом:", buttons=[Button(title="🔙 Назад", callback_data="back:prev")])
+                return
         if not found_loc:
             client.send_message(to=user_id, text="❌ Не найдено. Введите номер или точное название из списка, или 0.")
             return
         work_data = state.get("data", {}).get("work", {})
         work_data["location"] = found_loc
+        work_data["loc_grp"] = chosen_loc_grp
+        state["data"]["work"] = work_data
+        set_state(user_id, "work_manual_crop", state["data"], save_to_history=True, back_callback="work:manual:field")
+
+        lines = ["Выберите *культуру* (отправьте номер):"]
+        for i, c in enumerate(CROPS, 1):
+            lines.append(f"{i}. {c}")
+        client.send_message(to=user_id, text="\n".join(lines), buttons=[Button(title="🔙 Назад", callback_data="back:prev")])
+        return
+
+    if current_state == "work_manual_field_custom":
+        if message_text == "0":
+            if go_back(client, user_id):
+                return
+            locations = state.get("data", {}).get("locs", [])
+            lines = build_manual_location_lines(locations)
+            client.send_message(to=user_id, text="\n".join(lines), buttons=[Button(title="🔙 Назад", callback_data="back:prev")])
+            set_state(user_id, "work_manual_field", state["data"], save_to_history=False)
+            return
+        if len(message_text.strip()) < 2:
+            client.send_message(to=user_id, text="❌ Введите название локации (минимум 2 символа) или 0 для возврата.")
+            return
+        work_data = state.get("data", {}).get("work", {})
+        work_data["location"] = message_text.strip()
         work_data["loc_grp"] = GROUP_FIELDS
         state["data"]["work"] = work_data
         set_state(user_id, "work_manual_crop", state["data"], save_to_history=True, back_callback="work:manual:field")
@@ -3870,9 +3960,7 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
         if message_text == "0":
             # Назад к выбору поля
             locations = state.get("data", {}).get("locs", [])
-            lines = ["Выберите *поле* (отправьте номер):"]
-            for i, (_, name) in enumerate(locations, 1):
-                lines.append(f"{i}. {name}")
+            lines = build_manual_location_lines(locations)
             client.send_message(to=user_id, text="\n".join(lines), buttons=[Button(title="🔙 Назад", callback_data="back:prev")])
             set_state(user_id, "work_manual_field", state["data"], save_to_history=False)
             return
@@ -3883,11 +3971,12 @@ def handle_text(client: WhatsApp360Client, msg: MessageObject):
         if not (1 <= choice <= len(CROPS)):
             client.send_message(to=user_id, text="❌ Неверный номер. Введите номер из списка или 0.")
             return
-        if choice == len(CROPS) and CROPS[choice - 1].lower() == "прочее":
+        selected_crop = CROPS[choice - 1]
+        if selected_crop.lower() == "прочее":
             set_state(user_id, "work_manual_crop_custom", state["data"], save_to_history=False)
             client.send_message(to=user_id, text="📝 Введите *культуру* текстом:", buttons=[Button(title="🔙 Назад", callback_data="back:prev")])
             return
-        crop = CROPS[choice - 1]
+        crop = selected_crop
         work_data = state.get("data", {}).get("work", {})
         work_data["crop"] = crop
         activity_base = work_data.get("activity_base", "Работа")
