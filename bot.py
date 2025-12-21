@@ -63,13 +63,13 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO)
 
 # WhatsApp настройки
-WHATSAPP_TOKEN = os.getenv("WHATSAPP_TOKEN")
-WHATSAPP_PHONE_ID = os.getenv("WHATSAPP_PHONE_ID")
+WHATSAPP_TOKEN = os.getenv("WHATSAPP_TOKEN") or os.getenv("D360_API_KEY")
+WHATSAPP_PHONE_ID = os.getenv("WHATSAPP_PHONE_ID") or os.getenv("PHONE_NUMBER_ID")
 VERIFY_TOKEN = os.getenv("VERIFY_TOKEN")
 APP_SECRET = os.getenv("APP_SECRET")
 SERVER_HOST = os.getenv("SERVER_HOST", "0.0.0.0")
 SERVER_PORT = int(os.getenv("SERVER_PORT", "8000"))
-WA_BASE_URL = os.getenv("WA_BASE_URL", "https://waba-v2.360dialog.io")
+WA_BASE_URL = os.getenv("WA_BASE_URL") or os.getenv("D360_BASE_URL") or "https://waba-v2.360dialog.io"
 REPORT_RELAY_PHONE = os.getenv("REPORT_RELAY_PHONE")
 if REPORT_RELAY_PHONE:
     logging.info(f"🔧 REPORT_RELAY_PHONE loaded: {REPORT_RELAY_PHONE}")
@@ -78,11 +78,11 @@ else:
 
 # WA: critical env check
 if not WHATSAPP_TOKEN:
-    logging.error("❌ Ошибка: WHATSAPP_TOKEN не найден в .env")
+    logging.error("❌ Ошибка: WHATSAPP_TOKEN (или D360_API_KEY) не найден в .env")
     sys.exit(1)
 
 if not WHATSAPP_PHONE_ID:
-    logging.error("❌ Ошибка: WHATSAPP_PHONE_ID не найден в .env")
+    logging.error("❌ Ошибка: WHATSAPP_PHONE_ID (или PHONE_NUMBER_ID) не найден в .env")
     sys.exit(1)
 
 if not VERIFY_TOKEN:

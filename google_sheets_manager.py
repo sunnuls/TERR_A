@@ -12,8 +12,11 @@ from typing import Optional, Tuple, List
 import calendar
 from pathlib import Path
 import threading
+import json
+import base64
 
 from google.oauth2.credentials import Credentials
+from google.oauth2.service_account import Credentials as ServiceAccountCredentials
 from google.auth.transport.requests import Request
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
@@ -34,6 +37,10 @@ TOKEN_JSON_PATH = Path(os.getenv("TOKEN_JSON_PATH", "token.json"))
 DRIVE_FOLDER_ID = os.getenv("DRIVE_FOLDER_ID", "")
 EXPORT_PREFIX = "ОТД"  # Force OTD prefix as per requirements
 DB_PATH = os.path.join(os.getcwd(), "reports_whatsapp.db")
+SHEETS_CREDENTIALS = os.getenv("SHEETS_CREDENTIALS", "")  # Base64 encoded JSON или путь к файлу
+GOOGLE_AUTH_MODE = os.getenv("GOOGLE_AUTH_MODE", "").strip().lower()
+GOOGLE_SERVICE_ACCOUNT_FILE = os.getenv("GOOGLE_SERVICE_ACCOUNT_FILE", "").strip()
+GOOGLE_APPLICATION_CREDENTIALS = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "").strip()
 
 # Русские названия месяцев
 MONTH_NAMES = {
@@ -65,35 +72,68 @@ def initialize_google_sheets() -> bool:
     global _sheets_service, _drive_service, _initialized
     
     try:
-        # Проверяем наличие credentials файла
-        if not os.path.exists(OAUTH_CLIENT_JSON):
-            logger.warning(f"⚠️ OAuth credentials файл не найден: {OAUTH_CLIENT_JSON}")
-            return False
-        
         creds = None
-        
-        # Загружаем существующий токен если есть
-        if TOKEN_JSON_PATH.exists():
-            try:
-                creds = Credentials.from_authorized_user_file(str(TOKEN_JSON_PATH), GOOGLE_SCOPES)
-            except Exception as e:
-                logger.warning(f"⚠️ Ошибка загрузки токена: {e}")
-        
-        # Если нет валидных credentials, запускаем OAuth flow
-        if not creds or not creds.valid:
-            if creds and creds.expired and creds.refresh_token:
-                logger.info("🔄 Обновление токена...")
-                creds.refresh(Request())
+
+        # TgBot-compatible envs: GOOGLE_AUTH_MODE=service + GOOGLE_SERVICE_ACCOUNT_FILE=/path/to/key.json
+        # Also support GOOGLE_APPLICATION_CREDENTIALS.
+        effective_sheets_credentials = SHEETS_CREDENTIALS
+        if (not effective_sheets_credentials or not effective_sheets_credentials.strip()) and GOOGLE_AUTH_MODE == "service":
+            if GOOGLE_SERVICE_ACCOUNT_FILE:
+                effective_sheets_credentials = GOOGLE_SERVICE_ACCOUNT_FILE
+            elif GOOGLE_APPLICATION_CREDENTIALS:
+                effective_sheets_credentials = GOOGLE_APPLICATION_CREDENTIALS
+
+        # 1) Предпочитаем Service Account (для серверов это самый стабильный вариант)
+        # SHEETS_CREDENTIALS: base64(JSON) или путь к JSON файлу
+        if effective_sheets_credentials and effective_sheets_credentials.strip():
+            raw = effective_sheets_credentials.strip()
+
+            info = None
+            if os.path.exists(raw):
+                info = json.loads(Path(raw).read_text(encoding="utf-8"))
             else:
-                logger.info("🔐 Запуск OAuth авторизации...")
-                flow = InstalledAppFlow.from_client_secrets_file(
-                    OAUTH_CLIENT_JSON, GOOGLE_SCOPES
-                )
-                creds = flow.run_local_server(port=0)
-            
-            # Сохраняем токен
-            TOKEN_JSON_PATH.write_text(creds.to_json())
-            logger.info("✅ Токен сохранен")
+                try:
+                    decoded = base64.b64decode(raw).decode("utf-8")
+                    info = json.loads(decoded)
+                except Exception as e:
+                    logger.error(
+                        "❌ SHEETS_CREDENTIALS задан, но не удалось разобрать (ожидается base64(JSON) или путь к файлу): %s",
+                        e,
+                    )
+                    return False
+
+            creds = ServiceAccountCredentials.from_service_account_info(info, scopes=GOOGLE_SCOPES)
+            logger.info("✅ Используются Service Account credentials для Google Sheets")
+
+        # 2) Fallback: старый user OAuth (token.json). Может ломаться invalid_grant.
+        if creds is None:
+            # Проверяем наличие credentials файла
+            if not os.path.exists(OAUTH_CLIENT_JSON):
+                logger.warning(f"⚠️ OAuth credentials файл не найден: {OAUTH_CLIENT_JSON}")
+                return False
+
+            # Загружаем существующий токен если есть
+            if TOKEN_JSON_PATH.exists():
+                try:
+                    creds = Credentials.from_authorized_user_file(str(TOKEN_JSON_PATH), GOOGLE_SCOPES)
+                except Exception as e:
+                    logger.warning(f"⚠️ Ошибка загрузки токена: {e}")
+
+            # Если нет валидных credentials, запускаем OAuth flow
+            if not creds or not creds.valid:
+                if creds and creds.expired and creds.refresh_token:
+                    logger.info("🔄 Обновление токена...")
+                    creds.refresh(Request())
+                else:
+                    logger.info("🔐 Запуск OAuth авторизации...")
+                    flow = InstalledAppFlow.from_client_secrets_file(
+                        OAUTH_CLIENT_JSON, GOOGLE_SCOPES
+                    )
+                    creds = flow.run_local_server(port=0)
+
+                # Сохраняем токен
+                TOKEN_JSON_PATH.write_text(creds.to_json())
+                logger.info("✅ Токен сохранен")
         
         # Создаем сервисы
         _sheets_service = build('sheets', 'v4', credentials=creds)
